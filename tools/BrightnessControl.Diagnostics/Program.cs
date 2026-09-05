@@ -13,6 +13,12 @@ if (args.Contains("set-all") && args.Length > 1)
     return;
 }
 
+if (args.Contains("watch-foreground"))
+{
+    RunWatchForeground();
+    return;
+}
+
 var monitors = MonitorEnumerator.EnumerateMonitors();
 var ddcCi = new DdcCiBrightnessProvider();
 var wmi = new WmiBrightnessProvider();
@@ -63,6 +69,21 @@ static void RunSetAll(int percent)
     {
         Console.WriteLine($"  {monitor.FriendlyName} [{monitor.ConnectionKind}]: {controller.GetBrightness(monitor)?.Percent.ToString() ?? "null"}%");
     }
+}
+
+static void RunWatchForeground()
+{
+    Console.WriteLine("Слежу за передним окном 30 секунд — переключайтесь между окнами/мониторами...");
+
+    using var watcher = new ForegroundAppWatcher();
+    watcher.ForegroundChanged += info =>
+    {
+        Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] процесс={info.ProcessName}, заголовок=\"{info.WindowTitle}\", монитор={info.MonitorAdapterDeviceName}");
+    };
+    watcher.ReportCurrentForegroundWindow();
+
+    Thread.Sleep(30000);
+    Console.WriteLine("Готово.");
 }
 
 static void RunOverlayDemo()

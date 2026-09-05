@@ -72,6 +72,14 @@ internal static class DisplayTopology
         return found;
     }
 
+    // Обратная задача к FindMonitorHandle: по HMONITOR (например, от MonitorFromWindow)
+    // получить имя адаптера ("\\.\DISPLAYn"), чтобы сопоставить его с MonitorInfo.
+    public static string? GetAdapterDeviceName(IntPtr hMonitor)
+    {
+        var info = new User32.MONITORINFOEX { cbSize = Marshal.SizeOf<User32.MONITORINFOEX>() };
+        return User32.GetMonitorInfo(hMonitor, ref info) ? info.szDevice : null;
+    }
+
     public static Dxva2.PHYSICAL_MONITOR[] GetPhysicalMonitors(IntPtr hMonitor)
     {
         if (!Dxva2.GetNumberOfPhysicalMonitorsFromHMONITOR(hMonitor, out var count) || count == 0)
