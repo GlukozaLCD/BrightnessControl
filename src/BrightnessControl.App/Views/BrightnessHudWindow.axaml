@@ -1,0 +1,16 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="BrightnessControl.App.Views.BrightnessHudWindow"
+        Width="120" Height="60"
+        WindowDecorations="None"
+        ShowInTaskbar="False"
+        Topmost="True"
+        CanResize="False"
+        Background="#CC202020">
+    <TextBlock x:Name="PercentText"
+               HorizontalAlignment="Center"
+               VerticalAlignment="Center"
+               Foreground="White"
+               FontSize="22"
+               Text="0%" />
+</Window>

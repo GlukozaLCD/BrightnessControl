@@ -53,12 +53,17 @@ public sealed class BrightnessController : IDisposable
         return ok;
     }
 
+    // Каждый монитор общается по DDC/CI через свой собственный физический канал
+    // (свой кабель/порт), поэтому параллельная запись безопасна и ощущается
+    // пользователем как настоящее "все сразу" — последовательный foreach давал
+    // заметный разнобой по времени между мониторами, особенно с более медленными.
     public void SetAllBrightness(int percent)
     {
-        foreach (var monitor in _monitors)
-        {
-            SetBrightness(monitor, percent);
-        }
+        var tasks = _monitors
+            .Select(monitor => Task.Run(() => SetBrightness(monitor, percent)))
+            .ToArray();
+
+        Task.WaitAll(tasks);
     }
 
     public int? GetLastKnownPercent(MonitorInfo monitor) => _store.GetLastPercent(GetMonitorKey(monitor));

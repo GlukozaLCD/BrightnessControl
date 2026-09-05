@@ -13,6 +13,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{07C2787E
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BrightnessControl.Diagnostics", "tools\BrightnessControl.Diagnostics\BrightnessControl.Diagnostics.csproj", "{617C86BC-46C9-4A1D-A4C8-E10AD7F9886B}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BrightnessControl.App", "src\BrightnessControl.App\BrightnessControl.App.csproj", "{78094558-E8D8-4DD4-BA61-7E2568107AE7}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -59,6 +61,18 @@ Global
 		{617C86BC-46C9-4A1D-A4C8-E10AD7F9886B}.Release|x64.Build.0 = Release|Any CPU
 		{617C86BC-46C9-4A1D-A4C8-E10AD7F9886B}.Release|x86.ActiveCfg = Release|Any CPU
 		{617C86BC-46C9-4A1D-A4C8-E10AD7F9886B}.Release|x86.Build.0 = Release|Any CPU
+		{78094558-E8D8-4DD4-BA61-7E2568107AE7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{78094558-E8D8-4DD4-BA61-7E2568107AE7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{78094558-E8D8-4DD4-BA61-7E2568107AE7}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{78094558-E8D8-4DD4-BA61-7E2568107AE7}.Debug|x64.Build.0 = Debug|Any CPU
+		{78094558-E8D8-4DD4-BA61-7E2568107AE7}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{78094558-E8D8-4DD4-BA61-7E2568107AE7}.Debug|x86.Build.0 = Debug|Any CPU
+		{78094558-E8D8-4DD4-BA61-7E2568107AE7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{78094558-E8D8-4DD4-BA61-7E2568107AE7}.Release|Any CPU.Build.0 = Release|Any CPU
+		{78094558-E8D8-4DD4-BA61-7E2568107AE7}.Release|x64.ActiveCfg = Release|Any CPU
+		{78094558-E8D8-4DD4-BA61-7E2568107AE7}.Release|x64.Build.0 = Release|Any CPU
+		{78094558-E8D8-4DD4-BA61-7E2568107AE7}.Release|x86.ActiveCfg = Release|Any CPU
+		{78094558-E8D8-4DD4-BA61-7E2568107AE7}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -67,5 +81,6 @@ Global
 		{62C23476-6197-48AD-8B58-69884F32CED2} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{5ECA5ED9-FB30-44C2-B683-34B6BAD664CE} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{617C86BC-46C9-4A1D-A4C8-E10AD7F9886B} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
+		{78094558-E8D8-4DD4-BA61-7E2568107AE7} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal
