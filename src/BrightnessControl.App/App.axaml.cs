@@ -11,6 +11,11 @@ namespace BrightnessControl.App;
 
 public partial class App : Application
 {
+    private const uint ExitMenuId = 1;
+    private const uint OpenSettingsMenuId = 2;
+    private const uint PresetMenuIdBase = 1000;
+    private static readonly int[] PresetPercents = { 25, 50, 75, 100 };
+
     private BrightnessController? _brightnessController;
     private TrayService? _trayService;
     private TraySettingsStore? _traySettingsStore;
@@ -46,7 +51,8 @@ public partial class App : Application
                 new Uri("avares://BrightnessControl.App/Assets/avalonia-logo.ico"),
                 "BrightnessControl");
             _trayService.ScrollNotches += OnScrollNotches;
-            _trayService.ExitRequested += () => Dispatcher.UIThread.Post(() => desktop.Shutdown());
+            _trayService.BuildMenuItems = BuildTrayMenu;
+            _trayService.MenuItemClicked += id => OnTrayMenuItemClicked(id, desktop);
         }
 
         base.OnFrameworkInitializationCompleted();
@@ -73,6 +79,69 @@ public partial class App : Application
         }
 
         return count > 0 ? sum / count : 50;
+    }
+
+    // Windows нередко отдаёт одинаковое общее имя ("Generic PnP Monitor") для
+    // нескольких разных мониторов — без номера адаптера их не отличить в меню.
+    private static string FormatMenuLabel(MonitorInfo monitor)
+    {
+        var adapterShortName = monitor.AdapterDeviceName.TrimStart('\\', '.');
+        return $"{monitor.FriendlyName} ({adapterShortName})";
+    }
+
+    private IReadOnlyList<TrayMenuItem> BuildTrayMenu()
+    {
+        var items = new List<TrayMenuItem>();
+        var monitors = _brightnessController?.Monitors ?? Array.Empty<MonitorInfo>();
+
+        for (var monitorIndex = 0; monitorIndex < monitors.Count; monitorIndex++)
+        {
+            var presetItems = new List<TrayMenuItem>();
+            for (var presetIndex = 0; presetIndex < PresetPercents.Length; presetIndex++)
+            {
+                var id = PresetMenuIdBase + (uint)monitorIndex * 10 + (uint)presetIndex;
+                presetItems.Add(new TrayMenuItem { Header = $"{PresetPercents[presetIndex]}%", Id = id });
+            }
+
+            items.Add(new TrayMenuItem { Header = FormatMenuLabel(monitors[monitorIndex]), SubItems = presetItems });
+        }
+
+        items.Add(TrayMenuItem.Separator());
+        items.Add(new TrayMenuItem { Header = "Открыть настройки", Id = OpenSettingsMenuId, IsEnabled = false });
+        items.Add(TrayMenuItem.Separator());
+        items.Add(new TrayMenuItem { Header = "Выход", Id = ExitMenuId });
+
+        return items;
+    }
+
+    private void OnTrayMenuItemClicked(uint id, IClassicDesktopStyleApplicationLifetime desktop)
+    {
+        if (id == ExitMenuId)
+        {
+            Dispatcher.UIThread.Post(() => desktop.Shutdown());
+            return;
+        }
+
+        if (id == OpenSettingsMenuId)
+        {
+            // Полноценное окно настроек появится в FP3 — сейчас пункт отключён (MF_GRAYED).
+            return;
+        }
+
+        if (id >= PresetMenuIdBase)
+        {
+            var offset = id - PresetMenuIdBase;
+            var monitorIndex = (int)(offset / 10);
+            var presetIndex = (int)(offset % 10);
+            var monitors = _brightnessController?.Monitors;
+
+            if (monitors is not null && monitorIndex < monitors.Count && presetIndex < PresetPercents.Length)
+            {
+                var monitor = monitors[monitorIndex];
+                var percent = PresetPercents[presetIndex];
+                ThreadPool.QueueUserWorkItem(_ => _brightnessController?.SetBrightness(monitor, percent));
+            }
+        }
     }
 
     private void OnScrollNotches(TrayScrollEventArgs e)

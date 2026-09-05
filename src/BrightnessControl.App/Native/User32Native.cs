@@ -11,6 +11,9 @@ internal static class User32Native
     public const int WH_MOUSE_LL = 14;
 
     public const uint MF_STRING = 0x00000000;
+    public const uint MF_POPUP = 0x00000010;
+    public const uint MF_SEPARATOR = 0x00000800;
+    public const uint MF_GRAYED = 0x00000001;
     public const uint TPM_RETURNCMD = 0x0100;
     public const uint TPM_NONOTIFY = 0x0080;
 
