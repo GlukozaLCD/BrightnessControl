@@ -1,0 +1,12 @@
+# Локальные функциональные планы (рабочие черновики, не публикуются)
+.plans/
+
+# .NET / Visual Studio
+bin/
+obj/
+*.user
+.vs/
+
+# Rider / VS Code
+.idea/
+.vscode/
