@@ -6,9 +6,12 @@ public class BrightnessControllerTests
     public void SetAllBrightness_AppliesToEveryDdcCiMonitor_AndPersistsLastPercent()
     {
         var statePath = Path.Combine(Path.GetTempPath(), $"brightness-controller-test-{Guid.NewGuid():N}.json");
+        var pacingPath = Path.Combine(Path.GetTempPath(), $"brightness-controller-pacing-test-{Guid.NewGuid():N}.json");
         try
         {
-            using var controller = new BrightnessController(new JsonFileBrightnessStateStore(statePath));
+            using var controller = new BrightnessController(
+                new JsonFileBrightnessStateStore(statePath),
+                new JsonFileMonitorPacingStore(pacingPath));
 
             var ddcCiMonitors = controller.Monitors
                 .Where(m => m.ConnectionKind == MonitorConnectionKind.ExternalDdcCi)
@@ -59,6 +62,11 @@ public class BrightnessControllerTests
             if (File.Exists(statePath))
             {
                 File.Delete(statePath);
+            }
+
+            if (File.Exists(pacingPath))
+            {
+                File.Delete(pacingPath);
             }
         }
     }

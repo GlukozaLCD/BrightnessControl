@@ -1,0 +1,10 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="BrightnessControl.App.Views.SettingsWindow"
+        Title="BrightnessControl — Настройки"
+        Width="420" Height="440"
+        CanResize="True">
+    <ScrollViewer>
+        <StackPanel x:Name="RootPanel" Margin="16" Spacing="8" />
+    </ScrollViewer>
+</Window>

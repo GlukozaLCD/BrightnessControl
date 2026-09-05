@@ -20,36 +20,56 @@ public sealed class DdcCiBrightnessProvider
                 : null);
     }
 
-    public bool SetBrightness(MonitorInfo monitor, int percent)
+    public bool SetBrightness(MonitorInfo monitor, int percent) => SetBrightness(monitor, percent, out _);
+
+    // attemptsUsed — точный сигнал "капризности" монитора на этой конкретной записи:
+    // 1 = применилось с первого раза, >1 = потребовались повторы. Используется
+    // BrightnessController для адаптивной паузы вместо оценки по времени (тайминги
+    // подвержены системному джиттеру и близки к порогу даже у здоровых мониторов).
+    public bool SetBrightness(MonitorInfo monitor, int percent, out int attemptsUsed)
     {
         percent = Math.Clamp(percent, 0, 100);
+        var label = $"{monitor.FriendlyName} [{monitor.AdapterDeviceName}]";
 
-        return WithPhysicalMonitorHandle(monitor, handle =>
+        var result = WithPhysicalMonitorHandle(monitor, handle =>
         {
-            if (!Dxva2.GetMonitorBrightness(handle, out var min, out _, out var max) || max <= min)
+            if (!Dxva2.GetMonitorBrightness(handle, out var min, out var before, out var max) || max <= min)
             {
-                return false;
+                DebugLog.Write($"SetBrightness {label} -> {percent}%: не удалось прочитать диапазон, отмена");
+                return (Success: false, Attempts: 0);
             }
 
             var raw = min + (uint)Math.Round((max - min) * (percent / 100.0));
+            DebugLog.Write($"SetBrightness {label} -> {percent}% (raw {raw}, было {before}, диапазон [{min};{max}])");
 
             for (var attempt = 1; attempt <= MaxSetAttempts; attempt++)
             {
-                if (!Dxva2.SetMonitorBrightness(handle, raw))
+                var ack = Dxva2.SetMonitorBrightness(handle, raw);
+                DebugLog.Write($"  попытка {attempt}/{MaxSetAttempts}: SetMonitorBrightness -> ack={ack}");
+
+                if (!ack)
                 {
                     continue;
                 }
 
                 Thread.Sleep(SettleDelayMs);
 
-                if (Dxva2.GetMonitorBrightness(handle, out _, out var current, out _) && current == raw)
+                var readOk = Dxva2.GetMonitorBrightness(handle, out _, out var current, out _);
+                DebugLog.Write($"  попытка {attempt}/{MaxSetAttempts}: проверка -> readOk={readOk}, current={current}, ожидалось={raw}");
+
+                if (readOk && current == raw)
                 {
-                    return true;
+                    DebugLog.Write($"  {label}: подтверждено на попытке {attempt}");
+                    return (Success: true, Attempts: attempt);
                 }
             }
 
-            return false;
+            DebugLog.Write($"  {label}: НЕ подтверждено после {MaxSetAttempts} попыток");
+            return (Success: false, Attempts: MaxSetAttempts);
         });
+
+        attemptsUsed = result.Attempts;
+        return result.Success;
     }
 
     private static T WithPhysicalMonitorHandle<T>(MonitorInfo monitor, Func<IntPtr, T> action)

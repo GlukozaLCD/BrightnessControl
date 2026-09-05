@@ -7,6 +7,9 @@ obj/
 *.user
 .vs/
 
+# Логи (диагностический debug.log и т.п.)
+*.log
+
 # Rider / VS Code
 .idea/
 .vscode/

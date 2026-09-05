@@ -1,0 +1,51 @@
+using System.Text.Json;
+
+namespace BrightnessControl.App.Services;
+
+public sealed class AppSettingsStore
+{
+    private readonly string _filePath;
+
+    public AppSettingsStore(string? filePath = null)
+    {
+        _filePath = filePath ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "BrightnessControl",
+            "app-settings.json");
+    }
+
+    public AppSettings Load()
+    {
+        try
+        {
+            if (!File.Exists(_filePath))
+            {
+                return new AppSettings();
+            }
+
+            var json = File.ReadAllText(_filePath);
+            return JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return new AppSettings();
+        }
+    }
+
+    public void Save(AppSettings settings)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(_filePath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.WriteAllText(_filePath, JsonSerializer.Serialize(settings));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+}

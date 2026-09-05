@@ -20,12 +20,11 @@ public partial class App : Application
     private TrayService? _trayService;
     private TraySettingsStore? _traySettingsStore;
     private TraySettings? _traySettings;
+    private AppSettingsStore? _appSettingsStore;
     private BrightnessHudWindow? _hud;
+    private SettingsWindow? _settingsWindow;
+    private CoalescingBrightnessApplier? _globalApplier;
     private int _globalPercent = 50;
-
-    private readonly object _brightnessWriteLock = new();
-    private int? _pendingPercent;
-    private bool _writeInProgress;
 
     public override void Initialize()
     {
@@ -44,7 +43,12 @@ public partial class App : Application
             _brightnessController = new BrightnessController();
             _traySettingsStore = new TraySettingsStore();
             _traySettings = _traySettingsStore.Load();
+            _appSettingsStore = new AppSettingsStore();
+            ApplyTheme(_appSettingsStore.Load().Theme);
             _globalPercent = ComputeInitialGlobalPercent(_brightnessController);
+            _globalApplier = new CoalescingBrightnessApplier(
+                percent => _brightnessController?.SetAllBrightness(percent),
+                () => _brightnessController?.GetGlobalPacingMs() ?? 100);
             _hud = new BrightnessHudWindow();
 
             _trayService = new TrayService(
@@ -52,10 +56,25 @@ public partial class App : Application
                 "BrightnessControl");
             _trayService.ScrollNotches += OnScrollNotches;
             _trayService.BuildMenuItems = BuildTrayMenu;
-            _trayService.MenuItemClicked += id => OnTrayMenuItemClicked(id, desktop);
+            _trayService.MenuItemClicked += e => OnTrayMenuItemClicked(e, desktop);
         }
 
         base.OnFrameworkInitializationCompleted();
+    }
+
+    public static void ApplyTheme(AppThemePreference preference)
+    {
+        if (Current is null)
+        {
+            return;
+        }
+
+        Current.RequestedThemeVariant = preference switch
+        {
+            AppThemePreference.Light => Avalonia.Styling.ThemeVariant.Light,
+            AppThemePreference.Dark => Avalonia.Styling.ThemeVariant.Dark,
+            _ => Avalonia.Styling.ThemeVariant.Default,
+        };
     }
 
     private static int ComputeInitialGlobalPercent(BrightnessController controller)
@@ -81,14 +100,6 @@ public partial class App : Application
         return count > 0 ? sum / count : 50;
     }
 
-    // Windows нередко отдаёт одинаковое общее имя ("Generic PnP Monitor") для
-    // нескольких разных мониторов — без номера адаптера их не отличить в меню.
-    private static string FormatMenuLabel(MonitorInfo monitor)
-    {
-        var adapterShortName = monitor.AdapterDeviceName.TrimStart('\\', '.');
-        return $"{monitor.FriendlyName} ({adapterShortName})";
-    }
-
     private IReadOnlyList<TrayMenuItem> BuildTrayMenu()
     {
         var items = new List<TrayMenuItem>();
@@ -103,34 +114,34 @@ public partial class App : Application
                 presetItems.Add(new TrayMenuItem { Header = $"{PresetPercents[presetIndex]}%", Id = id });
             }
 
-            items.Add(new TrayMenuItem { Header = FormatMenuLabel(monitors[monitorIndex]), SubItems = presetItems });
+            items.Add(new TrayMenuItem { Header = MonitorLabel.Format(monitors[monitorIndex]), SubItems = presetItems });
         }
 
         items.Add(TrayMenuItem.Separator());
-        items.Add(new TrayMenuItem { Header = "Открыть настройки", Id = OpenSettingsMenuId, IsEnabled = false });
+        items.Add(new TrayMenuItem { Header = "Открыть настройки", Id = OpenSettingsMenuId });
         items.Add(TrayMenuItem.Separator());
         items.Add(new TrayMenuItem { Header = "Выход", Id = ExitMenuId });
 
         return items;
     }
 
-    private void OnTrayMenuItemClicked(uint id, IClassicDesktopStyleApplicationLifetime desktop)
+    private void OnTrayMenuItemClicked(TrayMenuClickEventArgs e, IClassicDesktopStyleApplicationLifetime desktop)
     {
-        if (id == ExitMenuId)
+        if (e.Id == ExitMenuId)
         {
             Dispatcher.UIThread.Post(() => desktop.Shutdown());
             return;
         }
 
-        if (id == OpenSettingsMenuId)
+        if (e.Id == OpenSettingsMenuId)
         {
-            // Полноценное окно настроек появится в FP3 — сейчас пункт отключён (MF_GRAYED).
+            Dispatcher.UIThread.Post(() => OpenSettingsWindow(e.CursorX, e.CursorY));
             return;
         }
 
-        if (id >= PresetMenuIdBase)
+        if (e.Id >= PresetMenuIdBase)
         {
-            var offset = id - PresetMenuIdBase;
+            var offset = e.Id - PresetMenuIdBase;
             var monitorIndex = (int)(offset / 10);
             var presetIndex = (int)(offset % 10);
             var monitors = _brightnessController?.Monitors;
@@ -144,6 +155,34 @@ public partial class App : Application
         }
     }
 
+    private void OpenSettingsWindow(int cursorX, int cursorY)
+    {
+        if (_brightnessController is null)
+        {
+            return;
+        }
+
+        var targetMonitor = MonitorLookup.FindAtPoint(_brightnessController.Monitors, cursorX, cursorY)
+            ?? _brightnessController.Monitors.FirstOrDefault();
+
+        if (_settingsWindow is null)
+        {
+            _settingsWindow = new SettingsWindow(_brightnessController, _appSettingsStore ?? new AppSettingsStore());
+            _settingsWindow.Closed += (_, _) => _settingsWindow = null;
+        }
+
+        if (targetMonitor is not null)
+        {
+            _settingsWindow.ShowCenteredOn(targetMonitor.Bounds);
+        }
+        else
+        {
+            _settingsWindow.Show();
+        }
+
+        _settingsWindow.Activate();
+    }
+
     private void OnScrollNotches(TrayScrollEventArgs e)
     {
         Dispatcher.UIThread.Post(() =>
@@ -151,49 +190,7 @@ public partial class App : Application
             var step = _traySettings?.ScrollStepPercent ?? 10;
             _globalPercent = Math.Clamp(_globalPercent + e.Notches * step, 0, 100);
             _hud?.ShowPercent(_globalPercent, new PixelPoint(e.CursorX, e.CursorY));
-            RequestApplyBrightness(_globalPercent);
+            _globalApplier?.Request(_globalPercent);
         });
-    }
-
-    // Запись яркости по DDC/CI может занимать до пары секунд (повторы для капризных
-    // мониторов) — если делать это в UI-потоке на каждый "тик" колеса, приложение
-    // ощутимо подвисает. Поэтому запись уходит в фон, а быстрые последовательные
-    // скроллы схлопываются в одно применение последнего запрошенного значения, а не
-    // выстраиваются в очередь одна за другой.
-    private void RequestApplyBrightness(int percent)
-    {
-        lock (_brightnessWriteLock)
-        {
-            _pendingPercent = percent;
-            if (_writeInProgress)
-            {
-                return;
-            }
-
-            _writeInProgress = true;
-        }
-
-        ThreadPool.QueueUserWorkItem(_ => ApplyPendingBrightnessLoop());
-    }
-
-    private void ApplyPendingBrightnessLoop()
-    {
-        while (true)
-        {
-            int percentToApply;
-            lock (_brightnessWriteLock)
-            {
-                if (_pendingPercent is not { } pending)
-                {
-                    _writeInProgress = false;
-                    return;
-                }
-
-                percentToApply = pending;
-                _pendingPercent = null;
-            }
-
-            _brightnessController?.SetAllBrightness(percentToApply);
-        }
     }
 }

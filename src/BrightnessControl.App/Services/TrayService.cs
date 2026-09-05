@@ -12,6 +12,8 @@ namespace BrightnessControl.App.Services;
 // Shell_NotifyIconGetRect, чтобы не реагировать на скролл над чужими иконками.
 public readonly record struct TrayScrollEventArgs(int Notches, int CursorX, int CursorY);
 
+public readonly record struct TrayMenuClickEventArgs(uint Id, int CursorX, int CursorY);
+
 public sealed class TrayService : IDisposable
 {
     private const uint IconId = 1;
@@ -38,7 +40,7 @@ public sealed class TrayService : IDisposable
     private bool _disposed;
 
     public event Action<TrayScrollEventArgs>? ScrollNotches;
-    public event Action<uint>? MenuItemClicked;
+    public event Action<TrayMenuClickEventArgs>? MenuItemClicked;
 
     // Меню строится заново при каждом открытии — вызывающая сторона решает, что в нём
     // должно быть (список мониторов может измениться между показами).
@@ -170,7 +172,7 @@ public sealed class TrayService : IDisposable
 
         if (cmd > 0)
         {
-            MenuItemClicked?.Invoke((uint)cmd);
+            MenuItemClicked?.Invoke(new TrayMenuClickEventArgs((uint)cmd, pt.X, pt.Y));
         }
     }
 
