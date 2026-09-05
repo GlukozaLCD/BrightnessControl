@@ -12,7 +12,7 @@ namespace BrightnessControl.App.Services;
 // Shell_NotifyIconGetRect, чтобы не реагировать на скролл над чужими иконками.
 public readonly record struct TrayScrollEventArgs(int Notches, int CursorX, int CursorY);
 
-public readonly record struct TrayMenuClickEventArgs(uint Id, int CursorX, int CursorY);
+public readonly record struct TrayClickEventArgs(int CursorX, int CursorY);
 
 public sealed class TrayService : IDisposable
 {
@@ -40,11 +40,7 @@ public sealed class TrayService : IDisposable
     private bool _disposed;
 
     public event Action<TrayScrollEventArgs>? ScrollNotches;
-    public event Action<TrayMenuClickEventArgs>? MenuItemClicked;
-
-    // Меню строится заново при каждом открытии — вызывающая сторона решает, что в нём
-    // должно быть (список мониторов может измениться между показами).
-    public Func<IReadOnlyList<TrayMenuItem>>? BuildMenuItems { get; set; }
+    public event Action<TrayClickEventArgs>? RightClicked;
 
     public TrayService(Uri iconUri, string tooltip)
     {
@@ -137,70 +133,14 @@ public sealed class TrayService : IDisposable
             var mouseMsg = (uint)(lParam.ToInt64() & 0xFFFF);
             if (mouseMsg == User32Native.WM_RBUTTONUP || mouseMsg == User32Native.WM_CONTEXTMENU)
             {
-                ShowContextMenu();
+                User32Native.GetCursorPos(out var pt);
+                RightClicked?.Invoke(new TrayClickEventArgs(pt.X, pt.Y));
             }
 
             return IntPtr.Zero;
         }
 
         return User32Native.DefWindowProc(hWnd, msg, wParam, lParam);
-    }
-
-    private void ShowContextMenu()
-    {
-        User32Native.GetCursorPos(out var pt);
-
-        var items = BuildMenuItems?.Invoke() ?? Array.Empty<TrayMenuItem>();
-        var submenus = new List<IntPtr>();
-        var menu = BuildNativeMenu(items, submenus);
-
-        User32Native.SetForegroundWindow(_hwnd);
-        var cmd = User32Native.TrackPopupMenu(
-            menu,
-            User32Native.TPM_RETURNCMD | User32Native.TPM_NONOTIFY,
-            pt.X, pt.Y, 0, _hwnd, IntPtr.Zero);
-        User32Native.PostMessage(_hwnd, User32Native.WM_NULL, IntPtr.Zero, IntPtr.Zero);
-
-        // Уничтожать нужно и корневое меню, и все вложенные подменю — DestroyMenu не
-        // делает этого рекурсивно сам за нас для popup-подменю, добавленных как HMENU.
-        foreach (var submenu in submenus)
-        {
-            User32Native.DestroyMenu(submenu);
-        }
-
-        User32Native.DestroyMenu(menu);
-
-        if (cmd > 0)
-        {
-            MenuItemClicked?.Invoke(new TrayMenuClickEventArgs((uint)cmd, pt.X, pt.Y));
-        }
-    }
-
-    private static IntPtr BuildNativeMenu(IReadOnlyList<TrayMenuItem> items, List<IntPtr> submenusAccumulator)
-    {
-        var menu = User32Native.CreatePopupMenu();
-
-        foreach (var item in items)
-        {
-            if (item.IsSeparator)
-            {
-                User32Native.AppendMenu(menu, User32Native.MF_SEPARATOR, UIntPtr.Zero, string.Empty);
-                continue;
-            }
-
-            if (item.SubItems is { Count: > 0 })
-            {
-                var submenu = BuildNativeMenu(item.SubItems, submenusAccumulator);
-                submenusAccumulator.Add(submenu);
-                User32Native.AppendMenu(menu, User32Native.MF_POPUP | User32Native.MF_STRING, (UIntPtr)submenu, item.Header);
-                continue;
-            }
-
-            var flags = User32Native.MF_STRING | (item.IsEnabled ? 0 : User32Native.MF_GRAYED);
-            User32Native.AppendMenu(menu, flags, (UIntPtr)(item.Id ?? 0), item.Header);
-        }
-
-        return menu;
     }
 
     private IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam)

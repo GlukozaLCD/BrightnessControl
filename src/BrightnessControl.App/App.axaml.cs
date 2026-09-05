@@ -11,20 +11,17 @@ namespace BrightnessControl.App;
 
 public partial class App : Application
 {
-    private const uint ExitMenuId = 1;
-    private const uint OpenSettingsMenuId = 2;
-    private const uint PresetMenuIdBase = 1000;
-    private static readonly int[] PresetPercents = { 25, 50, 75, 100 };
-
     private BrightnessController? _brightnessController;
     private TrayService? _trayService;
     private TraySettingsStore? _traySettingsStore;
     private TraySettings? _traySettings;
     private AppSettingsStore? _appSettingsStore;
+    private AppSettings? _appSettings;
     private BrightnessHudWindow? _hud;
     private SettingsWindow? _settingsWindow;
     private CoalescingBrightnessApplier? _globalApplier;
     private int _globalPercent = 50;
+    private int? _stickyClungValue;
 
     public override void Initialize()
     {
@@ -44,7 +41,8 @@ public partial class App : Application
             _traySettingsStore = new TraySettingsStore();
             _traySettings = _traySettingsStore.Load();
             _appSettingsStore = new AppSettingsStore();
-            ApplyTheme(_appSettingsStore.Load().Theme);
+            _appSettings = _appSettingsStore.Load();
+            ApplyTheme(_appSettings.Theme);
             _globalPercent = ComputeInitialGlobalPercent(_brightnessController);
             _globalApplier = new CoalescingBrightnessApplier(
                 percent => _brightnessController?.SetAllBrightness(percent),
@@ -55,8 +53,7 @@ public partial class App : Application
                 new Uri("avares://BrightnessControl.App/Assets/avalonia-logo.ico"),
                 "BrightnessControl");
             _trayService.ScrollNotches += OnScrollNotches;
-            _trayService.BuildMenuItems = BuildTrayMenu;
-            _trayService.MenuItemClicked += e => OnTrayMenuItemClicked(e, desktop);
+            _trayService.RightClicked += e => Dispatcher.UIThread.Post(() => OpenSettingsWindow(e.CursorX, e.CursorY, desktop));
         }
 
         base.OnFrameworkInitializationCompleted();
@@ -100,62 +97,7 @@ public partial class App : Application
         return count > 0 ? sum / count : 50;
     }
 
-    private IReadOnlyList<TrayMenuItem> BuildTrayMenu()
-    {
-        var items = new List<TrayMenuItem>();
-        var monitors = _brightnessController?.Monitors ?? Array.Empty<MonitorInfo>();
-
-        for (var monitorIndex = 0; monitorIndex < monitors.Count; monitorIndex++)
-        {
-            var presetItems = new List<TrayMenuItem>();
-            for (var presetIndex = 0; presetIndex < PresetPercents.Length; presetIndex++)
-            {
-                var id = PresetMenuIdBase + (uint)monitorIndex * 10 + (uint)presetIndex;
-                presetItems.Add(new TrayMenuItem { Header = $"{PresetPercents[presetIndex]}%", Id = id });
-            }
-
-            items.Add(new TrayMenuItem { Header = MonitorLabel.Format(monitors[monitorIndex]), SubItems = presetItems });
-        }
-
-        items.Add(TrayMenuItem.Separator());
-        items.Add(new TrayMenuItem { Header = "Открыть настройки", Id = OpenSettingsMenuId });
-        items.Add(TrayMenuItem.Separator());
-        items.Add(new TrayMenuItem { Header = "Выход", Id = ExitMenuId });
-
-        return items;
-    }
-
-    private void OnTrayMenuItemClicked(TrayMenuClickEventArgs e, IClassicDesktopStyleApplicationLifetime desktop)
-    {
-        if (e.Id == ExitMenuId)
-        {
-            Dispatcher.UIThread.Post(() => desktop.Shutdown());
-            return;
-        }
-
-        if (e.Id == OpenSettingsMenuId)
-        {
-            Dispatcher.UIThread.Post(() => OpenSettingsWindow(e.CursorX, e.CursorY));
-            return;
-        }
-
-        if (e.Id >= PresetMenuIdBase)
-        {
-            var offset = e.Id - PresetMenuIdBase;
-            var monitorIndex = (int)(offset / 10);
-            var presetIndex = (int)(offset % 10);
-            var monitors = _brightnessController?.Monitors;
-
-            if (monitors is not null && monitorIndex < monitors.Count && presetIndex < PresetPercents.Length)
-            {
-                var monitor = monitors[monitorIndex];
-                var percent = PresetPercents[presetIndex];
-                ThreadPool.QueueUserWorkItem(_ => _brightnessController?.SetBrightness(monitor, percent));
-            }
-        }
-    }
-
-    private void OpenSettingsWindow(int cursorX, int cursorY)
+    private void OpenSettingsWindow(int cursorX, int cursorY, IClassicDesktopStyleApplicationLifetime desktop)
     {
         if (_brightnessController is null)
         {
@@ -167,7 +109,13 @@ public partial class App : Application
 
         if (_settingsWindow is null)
         {
-            _settingsWindow = new SettingsWindow(_brightnessController, _appSettingsStore ?? new AppSettingsStore());
+            _settingsWindow = new SettingsWindow(
+                _brightnessController,
+                _appSettings ?? new AppSettings(),
+                _appSettingsStore ?? new AppSettingsStore(),
+                _traySettings ?? new TraySettings(),
+                _traySettingsStore ?? new TraySettingsStore(),
+                () => desktop.Shutdown());
             _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         }
 
@@ -187,10 +135,54 @@ public partial class App : Application
     {
         Dispatcher.UIThread.Post(() =>
         {
+            if (_traySettings?.IsScrollEnabled == false)
+            {
+                return;
+            }
+
             var step = _traySettings?.ScrollStepPercent ?? 10;
-            _globalPercent = Math.Clamp(_globalPercent + e.Notches * step, 0, 100);
+            var stickyValues = _traySettings?.StickyValues ?? new List<int>();
+            var direction = Math.Sign(e.Notches);
+
+            for (var i = 0; i < Math.Abs(e.Notches); i++)
+            {
+                _globalPercent = ApplyStickyStep(_globalPercent, direction, step, stickyValues);
+            }
+
             _hud?.ShowPercent(_globalPercent, new PixelPoint(e.CursorX, e.CursorY));
             _globalApplier?.Request(_globalPercent);
         });
+    }
+
+    // "Липкие" значения: обычный плавный шаг по процентам, но если этот шаг
+    // пересёк бы настроенное липкое значение — скролл вместо этого останавливается
+    // точно на нём (на один тик), а следующий тик в ту же сторону просто продолжает
+    // движение дальше. Любые непроходящие через липкие значения шаги не меняются.
+    private int ApplyStickyStep(int current, int direction, int step, IReadOnlyList<int> stickyValues)
+    {
+        if (direction == 0)
+        {
+            return current;
+        }
+
+        if (_stickyClungValue == current && stickyValues.Contains(current))
+        {
+            _stickyClungValue = null;
+            return Math.Clamp(current + direction * step, 0, 100);
+        }
+
+        var candidate = Math.Clamp(current + direction * step, 0, 100);
+        var crossed = direction > 0
+            ? stickyValues.Where(v => v > current && v <= candidate).OrderBy(v => v).Cast<int?>().FirstOrDefault()
+            : stickyValues.Where(v => v < current && v >= candidate).OrderByDescending(v => v).Cast<int?>().FirstOrDefault();
+
+        if (crossed is { } stickyValue)
+        {
+            _stickyClungValue = stickyValue;
+            return stickyValue;
+        }
+
+        _stickyClungValue = null;
+        return candidate;
     }
 }

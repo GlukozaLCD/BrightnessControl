@@ -4,6 +4,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
 using BrightnessControl.App.Services;
 using BrightnessControl.Core;
 
@@ -12,7 +13,11 @@ namespace BrightnessControl.App.Views;
 public partial class SettingsWindow : Window
 {
     private readonly BrightnessController _controller;
+    private readonly AppSettings _appSettings;
     private readonly AppSettingsStore _appSettingsStore;
+    private readonly TraySettings _traySettings;
+    private readonly TraySettingsStore _traySettingsStore;
+    private readonly Action _onExitRequested;
     private readonly Dictionary<string, CoalescingBrightnessApplier> _perMonitorAppliers = new();
     private readonly List<Slider> _monitorSliders = new();
 
@@ -21,16 +26,116 @@ public partial class SettingsWindow : Window
     public SettingsWindow()
     {
         _controller = null!;
+        _appSettings = null!;
         _appSettingsStore = null!;
+        _traySettings = null!;
+        _traySettingsStore = null!;
+        _onExitRequested = () => { };
         InitializeComponent();
     }
 
-    public SettingsWindow(BrightnessController controller, AppSettingsStore appSettingsStore)
+    public SettingsWindow(
+        BrightnessController controller,
+        AppSettings appSettings,
+        AppSettingsStore appSettingsStore,
+        TraySettings traySettings,
+        TraySettingsStore traySettingsStore,
+        Action onExitRequested)
     {
         _controller = controller;
+        _appSettings = appSettings;
         _appSettingsStore = appSettingsStore;
+        _traySettings = traySettings;
+        _traySettingsStore = traySettingsStore;
+        _onExitRequested = onExitRequested;
         InitializeComponent();
         BuildContent();
+        SetupCloseButton();
+
+        // Ведёт себя как всплывающее меню трея: закрывается, стоит только кликнуть
+        // мимо — а не как обычное окно настроек, которое остаётся открытым.
+        Deactivated += (_, _) => Close();
+    }
+
+    // Окно без рамки (WindowDecorations="None"), поэтому своего крестика у него нет —
+    // рисуем свой: красный фон и белый крестик всегда, а при наведении крестик
+    // становится жирнее и фон сменяется диагональным переливом красный→белый.
+    // Обычная Avalonia Button поверх любого заданного фона рисует свой полупрозрачный
+    // оверлей наведения из темы (отсюда "чёрное/прозрачное пятно" вместо градиента),
+    // поэтому здесь используется Border — у него нет встроенного состояния наведения,
+    // и заданный фон отображается ровно так, как задан.
+    private void SetupCloseButton()
+    {
+        var closeButton = this.FindControl<Border>("CloseButton")!;
+        var glyph = this.FindControl<TextBlock>("CloseButtonGlyph")!;
+
+        var red = Avalonia.Media.Color.FromRgb(0xE8, 0x11, 0x23);
+        var solidRed = new Avalonia.Media.SolidColorBrush(red);
+
+        // Ширина белой полосы "блика" в долях ширины диагонали кнопки.
+        const double bandWidth = 0.28;
+        var sweepGradient = new Avalonia.Media.LinearGradientBrush
+        {
+            // Из правого верхнего угла в левый нижний.
+            StartPoint = new RelativePoint(1, 0, RelativeUnit.Relative),
+            EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative),
+            GradientStops =
+            {
+                new Avalonia.Media.GradientStop(red, 0),
+                new Avalonia.Media.GradientStop(Avalonia.Media.Colors.White, 0),
+                new Avalonia.Media.GradientStop(red, 0),
+            },
+        };
+
+        closeButton.Background = solidRed;
+        glyph.Foreground = Avalonia.Media.Brushes.White;
+        glyph.FontWeight = Avalonia.Media.FontWeight.Normal;
+        closeButton.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand);
+
+        DispatcherTimer? sweepTimer = null;
+        var progress = 0.0;
+
+        // Быстрые повторные наведения/уходы мышью не должны дёргать анимацию туда-сюда:
+        // если блик уже бежит — даём ему доиграть до конца, не перезапуская и не обрывая
+        // резко при уходе курсора. PointerEntered/PointerExited влияют только на жирность
+        // крестика, которая мгновенна и не может выглядеть "дёргано".
+        closeButton.PointerEntered += (_, _) =>
+        {
+            glyph.FontWeight = Avalonia.Media.FontWeight.Bold;
+
+            if (sweepTimer is not null)
+            {
+                return;
+            }
+
+            progress = 0.0;
+            closeButton.Background = sweepGradient;
+            sweepTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
+            sweepTimer.Tick += (_, _) =>
+            {
+                progress += 0.06;
+                if (progress >= 1.0)
+                {
+                    sweepTimer?.Stop();
+                    sweepTimer = null;
+                    closeButton.Background = solidRed;
+                    return;
+                }
+
+                // Полоса въезжает с одного угла (центр < 0) и выезжает за противоположный
+                // (центр > 1) — на краях кнопка целиком красная, в середине пути виден блик.
+                var center = -bandWidth + progress * (1 + 2 * bandWidth);
+                sweepGradient.GradientStops[0].Offset = Math.Clamp(center - bandWidth, 0, 1);
+                sweepGradient.GradientStops[1].Offset = Math.Clamp(center, 0, 1);
+                sweepGradient.GradientStops[2].Offset = Math.Clamp(center + bandWidth, 0, 1);
+            };
+            sweepTimer.Start();
+        };
+        closeButton.PointerExited += (_, _) =>
+        {
+            glyph.FontWeight = Avalonia.Media.FontWeight.Normal;
+        };
+        closeButton.PointerPressed += (_, _) => _onExitRequested();
     }
 
     private void InitializeComponent()
@@ -54,16 +159,49 @@ public partial class SettingsWindow : Window
 
     private void BuildContent()
     {
-        var root = this.FindControl<StackPanel>("RootPanel")!;
+        BuildMonitorsTab(this.FindControl<StackPanel>("MonitorsPanel")!);
+        BuildTrayTab(this.FindControl<StackPanel>("TrayPanel")!);
+        BuildAppearanceTab(this.FindControl<StackPanel>("AppearancePanel")!);
+    }
 
-        root.Children.Add(new TextBlock { Text = "Оформление", FontWeight = Avalonia.Media.FontWeight.Bold });
-        root.Children.Add(BuildThemeSelector());
+    private void BuildMonitorsTab(StackPanel root)
+    {
+        root.Children.Add(new TextBlock { Text = "Шаг слайдеров", FontWeight = Avalonia.Media.FontWeight.Bold });
+        root.Children.Add(new TextBlock
+        {
+            Text = "Слайдеры ниже \"прилипают\" к этому шагу — отдельно от шага скролла над иконкой трея (вкладка \"Трей\").",
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+        });
+
+        var sliderStepRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        sliderStepRow.Children.Add(new TextBlock { Text = "Шаг слайдера, %:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
+        var sliderStepUpDown = new NumericUpDown
+        {
+            Minimum = 1,
+            Maximum = 50,
+            Value = _appSettings.SliderStepPercent,
+            Width = 150,
+            FormatString = "0",
+        };
+        sliderStepUpDown.ValueChanged += (_, _) =>
+        {
+            var value = (int)(sliderStepUpDown.Value ?? 5);
+            _appSettings.SliderStepPercent = value;
+            _appSettingsStore.Save(_appSettings);
+            foreach (var slider in _monitorSliders)
+            {
+                slider.TickFrequency = value;
+            }
+        };
+        sliderStepRow.Children.Add(sliderStepUpDown);
+        root.Children.Add(sliderStepRow);
+
         root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
-
         root.Children.Add(new TextBlock { Text = "Все мониторы", FontWeight = Avalonia.Media.FontWeight.Bold });
+
         // "Все сразу" — чистый синхронизатор: сам не пишет в железо, а просто
         // двигает слайдер каждого монитора, который уже сам отвечает за запись.
-        AddSliderRow(root, "Все сразу", ComputeAveragePercent(), percent =>
+        AddSliderRow(root, "Все сразу", ComputeAveragePercent(), _appSettings.SliderStepPercent, percent =>
         {
             foreach (var slider in _monitorSliders)
             {
@@ -77,7 +215,7 @@ public partial class SettingsWindow : Window
         foreach (var monitor in _controller.Monitors)
         {
             var current = _controller.GetBrightness(monitor)?.Percent ?? 50;
-            var slider = AddSliderRow(root, MonitorLabel.Format(monitor), current, percent =>
+            var slider = AddSliderRow(root, MonitorLabel.Format(monitor), current, _appSettings.SliderStepPercent, percent =>
             {
                 if (!_perMonitorAppliers.TryGetValue(monitor.DeviceId, out var applier))
                 {
@@ -93,6 +231,101 @@ public partial class SettingsWindow : Window
         }
     }
 
+    private void BuildTrayTab(StackPanel root)
+    {
+        root.Children.Add(new TextBlock { Text = "Скролл над иконкой трея", FontWeight = Avalonia.Media.FontWeight.Bold });
+
+        var enabledCheckBox = new CheckBox { Content = "Включить скролл над иконкой трея", IsChecked = _traySettings.IsScrollEnabled };
+        enabledCheckBox.IsCheckedChanged += (_, _) =>
+        {
+            _traySettings.IsScrollEnabled = enabledCheckBox.IsChecked ?? true;
+            _traySettingsStore.Save(_traySettings);
+        };
+        root.Children.Add(enabledCheckBox);
+
+        var stepRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        stepRow.Children.Add(new TextBlock { Text = "Шаг скролла, %:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
+        var stepUpDown = new NumericUpDown
+        {
+            Minimum = 1,
+            Maximum = 50,
+            Value = _traySettings.ScrollStepPercent,
+            Width = 150,
+            FormatString = "0",
+        };
+        stepUpDown.ValueChanged += (_, _) =>
+        {
+            _traySettings.ScrollStepPercent = (int)(stepUpDown.Value ?? 10);
+            _traySettingsStore.Save(_traySettings);
+        };
+        stepRow.Children.Add(stepUpDown);
+        root.Children.Add(stepRow);
+
+        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
+        root.Children.Add(new TextBlock { Text = "\"Липкие\" значения", FontWeight = Avalonia.Media.FontWeight.Bold });
+        root.Children.Add(new TextBlock
+        {
+            Text = "При скролле яркость на этих значениях ненадолго задерживается (один щелчок " +
+                   "колеса), чтобы легко было попасть точно в них. Остальные проценты " +
+                   "по-прежнему доступны без ограничений.",
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+        });
+
+        var stickyListPanel = new StackPanel { Spacing = 6 };
+
+        void RefreshStickyList()
+        {
+            stickyListPanel.Children.Clear();
+            foreach (var value in _traySettings.StickyValues.OrderBy(v => v).ToList())
+            {
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+                row.Children.Add(new TextBlock { Text = $"{value}%", Width = 60, VerticalAlignment = VerticalAlignment.Center });
+
+                var removeButton = new Button { Content = "Удалить" };
+                removeButton.Click += (_, _) =>
+                {
+                    _traySettings.StickyValues.Remove(value);
+                    _traySettingsStore.Save(_traySettings);
+                    RefreshStickyList();
+                };
+                row.Children.Add(removeButton);
+
+                stickyListPanel.Children.Add(row);
+            }
+
+            if (_traySettings.StickyValues.Count == 0)
+            {
+                stickyListPanel.Children.Add(new TextBlock { Text = "(пока не задано ни одного значения)", FontStyle = Avalonia.Media.FontStyle.Italic });
+            }
+        }
+
+        RefreshStickyList();
+        root.Children.Add(stickyListPanel);
+
+        var addLabel = new TextBlock { Text = "Новое значение, %:", VerticalAlignment = VerticalAlignment.Center };
+        var addValueInput = new NumericUpDown { Minimum = 0, Maximum = 100, Value = 50, Width = 150, FormatString = "0" };
+        var addButton = new Button { Content = "Добавить как липкое" };
+        addButton.Click += (_, _) =>
+        {
+            var value = (int)(addValueInput.Value ?? 50);
+            if (!_traySettings.StickyValues.Contains(value))
+            {
+                _traySettings.StickyValues.Add(value);
+                _traySettingsStore.Save(_traySettings);
+                RefreshStickyList();
+            }
+        };
+        root.Children.Add(addLabel);
+        root.Children.Add(addValueInput);
+        root.Children.Add(addButton);
+    }
+
+    private void BuildAppearanceTab(StackPanel root)
+    {
+        root.Children.Add(new TextBlock { Text = "Тема", FontWeight = Avalonia.Media.FontWeight.Bold });
+        root.Children.Add(BuildThemeSelector());
+    }
+
     private ComboBox BuildThemeSelector()
     {
         var options = new (AppThemePreference Value, string Label)[]
@@ -102,11 +335,10 @@ public partial class SettingsWindow : Window
             (AppThemePreference.Dark, "Тёмная"),
         };
 
-        var current = _appSettingsStore.Load().Theme;
         var comboBox = new ComboBox
         {
             ItemsSource = options.Select(o => o.Label).ToList(),
-            SelectedIndex = Array.FindIndex(options, o => o.Value == current),
+            SelectedIndex = Array.FindIndex(options, o => o.Value == _appSettings.Theme),
             HorizontalAlignment = HorizontalAlignment.Left,
             MinWidth = 160,
         };
@@ -120,9 +352,8 @@ public partial class SettingsWindow : Window
 
             var selected = options[comboBox.SelectedIndex].Value;
             App.ApplyTheme(selected);
-            var settings = _appSettingsStore.Load();
-            settings.Theme = selected;
-            _appSettingsStore.Save(settings);
+            _appSettings.Theme = selected;
+            _appSettingsStore.Save(_appSettings);
         };
 
         return comboBox;
@@ -151,9 +382,9 @@ public partial class SettingsWindow : Window
         return count > 0 ? sum / count : 50;
     }
 
-    // Слайдер "прилипает" к шагу 5 (легко попасть в 30, 55 и т.д.), а кнопки ±
-    // дают точную подстройку на 1% — например, до 29 удобнее дойти кнопкой от
-    // 30, чем медленно тащить слайдер между тиками.
+    // Слайдер "прилипает" к настраиваемому шагу (см. "Шаг слайдеров" выше), а
+    // кнопки ± дают точную подстройку на 1% в обход прилипания — например, до 29
+    // удобнее дойти кнопкой от 30, чем медленно тащить слайдер между тиками.
     //
     // Во время реального перетаскивания слайдер пересекает много тиков подряд —
     // если писать в железо на КАЖДЫЙ тик, капризные DDC/CI-мониторы (см. FP1/FP2)
@@ -162,7 +393,7 @@ public partial class SettingsWindow : Window
     // применяется один раз — по отпусканию кнопки мыши, по клику ±, или когда
     // слайдер двигает не пользователь напрямую (например, синхронизация от
     // общего слайдера "Все сразу").
-    private static Slider AddSliderRow(StackPanel root, string label, int initialPercent, Action<int> onChanged)
+    private static Slider AddSliderRow(StackPanel root, string label, int initialPercent, int tickStep, Action<int> onChanged)
     {
         var header = new TextBlock { Text = $"{label}: {initialPercent}%" };
         var slider = new Slider
@@ -170,7 +401,7 @@ public partial class SettingsWindow : Window
             Minimum = 0,
             Maximum = 100,
             Value = initialPercent,
-            TickFrequency = 5,
+            TickFrequency = tickStep,
             IsSnapToTickEnabled = true,
         };
 
