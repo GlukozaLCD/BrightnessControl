@@ -120,7 +120,9 @@ public sealed class BrightnessController : IDisposable
 
     public int? GetLastKnownPercent(MonitorInfo monitor) => _store.GetLastPercent(GetMonitorKey(monitor));
 
-    private static string GetMonitorKey(MonitorInfo monitor) => DeviceIdentity.ExtractHardwareId(monitor.DeviceId) ?? monitor.DeviceId;
+    // Публично — нужен и другим потребителям Core (например, ScheduleEngine),
+    // которым требуется тот же стабильный ключ монитора между запусками.
+    public static string GetMonitorKey(MonitorInfo monitor) => DeviceIdentity.ExtractHardwareId(monitor.DeviceId) ?? monitor.DeviceId;
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
     {
