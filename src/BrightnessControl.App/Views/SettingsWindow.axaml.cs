@@ -162,6 +162,7 @@ public partial class SettingsWindow : Window
         BuildMonitorsTab(this.FindControl<StackPanel>("MonitorsPanel")!);
         BuildTrayTab(this.FindControl<StackPanel>("TrayPanel")!);
         BuildAppearanceTab(this.FindControl<StackPanel>("AppearancePanel")!);
+        BuildScheduleTab(this.FindControl<StackPanel>("SchedulePanel")!);
     }
 
     private void BuildMonitorsTab(StackPanel root)
@@ -324,6 +325,180 @@ public partial class SettingsWindow : Window
     {
         root.Children.Add(new TextBlock { Text = "Тема", FontWeight = Avalonia.Media.FontWeight.Bold });
         root.Children.Add(BuildThemeSelector());
+    }
+
+    private void BuildScheduleTab(StackPanel root)
+    {
+        var scheduleStore = new JsonFileScheduleStore();
+        var scheduleSettings = scheduleStore.Load();
+
+        var enabledCheckBox = new CheckBox { Content = "Включить расписание", IsChecked = scheduleSettings.IsEnabled };
+        root.Children.Add(enabledCheckBox);
+
+        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
+        root.Children.Add(new TextBlock { Text = "Сейчас активно", FontWeight = Avalonia.Media.FontWeight.Bold });
+        var activeNowPanel = new StackPanel { Spacing = 2 };
+        root.Children.Add(activeNowPanel);
+
+        void RefreshActiveNow()
+        {
+            activeNowPanel.Children.Clear();
+            var current = scheduleStore.Load();
+
+            if (!current.IsEnabled || current.Rules.Count == 0)
+            {
+                activeNowPanel.Children.Add(new TextBlock
+                {
+                    Text = "Расписание выключено или правил ещё нет.",
+                    FontStyle = Avalonia.Media.FontStyle.Italic,
+                });
+                return;
+            }
+
+            var orderedRules = current.Rules.OrderBy(r => r.Time).ToList();
+            var timeOfDay = TimeOnly.FromDateTime(DateTime.Now);
+
+            foreach (var monitor in _controller.Monitors)
+            {
+                var monitorKey = BrightnessController.GetMonitorKey(monitor);
+                var applicable = orderedRules
+                    .Where(r => r.MonitorKeys.Count == 0 || r.MonitorKeys.Contains(monitorKey))
+                    .ToList();
+
+                if (applicable.Count == 0)
+                {
+                    continue;
+                }
+
+                var active = ScheduleEngine.FindActiveRule(applicable, timeOfDay);
+                activeNowPanel.Children.Add(new TextBlock
+                {
+                    Text = $"{MonitorLabel.Format(monitor)}: {active.Time:HH:mm} → {active.Percent}%",
+                });
+            }
+
+            if (activeNowPanel.Children.Count == 0)
+            {
+                activeNowPanel.Children.Add(new TextBlock
+                {
+                    Text = "Ни для одного монитора нет применимых правил.",
+                    FontStyle = Avalonia.Media.FontStyle.Italic,
+                });
+            }
+        }
+
+        enabledCheckBox.IsCheckedChanged += (_, _) =>
+        {
+            scheduleSettings.IsEnabled = enabledCheckBox.IsChecked ?? true;
+            scheduleStore.Save(scheduleSettings);
+            RefreshActiveNow();
+        };
+
+        RefreshActiveNow();
+        var activeNowTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
+        activeNowTimer.Tick += (_, _) => RefreshActiveNow();
+        activeNowTimer.Start();
+
+        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
+        root.Children.Add(new TextBlock { Text = "Правила", FontWeight = Avalonia.Media.FontWeight.Bold });
+        var rulesListPanel = new StackPanel { Spacing = 6 };
+
+        void RefreshRulesList()
+        {
+            rulesListPanel.Children.Clear();
+
+            foreach (var rule in scheduleSettings.Rules.OrderBy(r => r.Time).ToList())
+            {
+                var scopeText = rule.MonitorKeys.Count == 0
+                    ? "все мониторы"
+                    : string.Join(", ", rule.MonitorKeys.Select(key =>
+                        _controller.Monitors.FirstOrDefault(m => BrightnessController.GetMonitorKey(m) == key) is { } found
+                            ? MonitorLabel.Format(found)
+                            : key));
+
+                var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*,Auto") };
+                var timeText = new TextBlock { Text = $"{rule.Time:HH:mm}", Width = 60, VerticalAlignment = VerticalAlignment.Center };
+                var percentText = new TextBlock { Text = $"{rule.Percent}%", Width = 50, VerticalAlignment = VerticalAlignment.Center };
+                var scopeLabel = new TextBlock { Text = scopeText, VerticalAlignment = VerticalAlignment.Center, TextWrapping = Avalonia.Media.TextWrapping.Wrap };
+                var removeButton = new Button { Content = "Удалить" };
+                removeButton.Click += (_, _) =>
+                {
+                    scheduleSettings.Rules.Remove(rule);
+                    scheduleStore.Save(scheduleSettings);
+                    RefreshRulesList();
+                    RefreshActiveNow();
+                };
+
+                Grid.SetColumn(timeText, 0);
+                Grid.SetColumn(percentText, 1);
+                Grid.SetColumn(scopeLabel, 2);
+                Grid.SetColumn(removeButton, 3);
+                row.Children.Add(timeText);
+                row.Children.Add(percentText);
+                row.Children.Add(scopeLabel);
+                row.Children.Add(removeButton);
+
+                rulesListPanel.Children.Add(row);
+            }
+
+            if (scheduleSettings.Rules.Count == 0)
+            {
+                rulesListPanel.Children.Add(new TextBlock { Text = "(правил ещё нет)", FontStyle = Avalonia.Media.FontStyle.Italic });
+            }
+        }
+
+        RefreshRulesList();
+        root.Children.Add(rulesListPanel);
+
+        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
+        root.Children.Add(new TextBlock { Text = "Новое правило", FontWeight = Avalonia.Media.FontWeight.Bold });
+
+        var timePicker = new TimePicker { SelectedTime = new TimeSpan(8, 0, 0) };
+        root.Children.Add(timePicker);
+
+        var percentRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        percentRow.Children.Add(new TextBlock { Text = "Яркость, %:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
+        var percentInput = new NumericUpDown { Minimum = 0, Maximum = 100, Value = 80, Width = 150, FormatString = "0" };
+        percentRow.Children.Add(percentInput);
+        root.Children.Add(percentRow);
+
+        var allMonitorsCheckBox = new CheckBox { Content = "Все мониторы", IsChecked = true };
+        root.Children.Add(allMonitorsCheckBox);
+
+        var monitorCheckBoxes = new List<(MonitorInfo Monitor, CheckBox CheckBox)>();
+        var monitorsPickPanel = new StackPanel { Spacing = 4, IsVisible = false };
+        foreach (var monitor in _controller.Monitors)
+        {
+            var checkBox = new CheckBox { Content = MonitorLabel.Format(monitor) };
+            monitorCheckBoxes.Add((monitor, checkBox));
+            monitorsPickPanel.Children.Add(checkBox);
+        }
+
+        allMonitorsCheckBox.IsCheckedChanged += (_, _) =>
+        {
+            monitorsPickPanel.IsVisible = allMonitorsCheckBox.IsChecked != true;
+        };
+        root.Children.Add(monitorsPickPanel);
+
+        var addRuleButton = new Button { Content = "Добавить правило" };
+        addRuleButton.Click += (_, _) =>
+        {
+            var time = timePicker.SelectedTime ?? new TimeSpan(8, 0, 0);
+            var scopeKeys = allMonitorsCheckBox.IsChecked == true
+                ? new List<string>()
+                : monitorCheckBoxes.Where(t => t.CheckBox.IsChecked == true).Select(t => BrightnessController.GetMonitorKey(t.Monitor)).ToList();
+
+            scheduleSettings.Rules.Add(new ScheduleRule
+            {
+                Time = TimeOnly.FromTimeSpan(time),
+                Percent = (int)(percentInput.Value ?? 80),
+                MonitorKeys = scopeKeys,
+            });
+            scheduleStore.Save(scheduleSettings);
+            RefreshRulesList();
+            RefreshActiveNow();
+        };
+        root.Children.Add(addRuleButton);
     }
 
     private ComboBox BuildThemeSelector()

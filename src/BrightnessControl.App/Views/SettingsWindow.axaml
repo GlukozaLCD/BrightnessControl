@@ -20,6 +20,13 @@
                 </Border>
             </Grid>
             <TabControl>
+                <TabControl.Styles>
+                    <Style Selector="TabItem">
+                        <Setter Property="FontSize" Value="12" />
+                        <Setter Property="Padding" Value="10,4" />
+                        <Setter Property="MinHeight" Value="28" />
+                    </Style>
+                </TabControl.Styles>
                 <TabItem Header="Мониторы">
                     <ScrollViewer>
                         <StackPanel x:Name="MonitorsPanel" Margin="16" Spacing="8" />
@@ -33,6 +40,11 @@
                 <TabItem Header="Оформление">
                     <ScrollViewer>
                         <StackPanel x:Name="AppearancePanel" Margin="16" Spacing="8" />
+                    </ScrollViewer>
+                </TabItem>
+                <TabItem Header="Расписание">
+                    <ScrollViewer>
+                        <StackPanel x:Name="SchedulePanel" Margin="16" Spacing="8" />
                     </ScrollViewer>
                 </TabItem>
             </TabControl>
