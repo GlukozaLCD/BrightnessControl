@@ -11,21 +11,30 @@ public sealed class AppProfileEngine : IDisposable
     private readonly BrightnessController _controller;
     private readonly IAppProfileStore _store;
     private readonly IForegroundAppWatcher _watcher;
+    private readonly IScheduleStore _scheduleStore;
 
     private string? _activeProfileId;
     private string? _activeMonitorAdapterName;
     private int? _snapshotPercent;
     private bool _disposed;
 
-    // Для живой индикации "сейчас активно" в GUI (см. FP5 Фаза 2).
+    // Для живой индикации "сейчас активно" в GUI (см. FP5 Фаза 2), а также чтобы
+    // ScheduleEngine (FP4) мог узнать, какой монитор сейчас занят профилем, и не
+    // перебивать его своими правилами — профиль приоритетнее расписания (решено
+    // при планировании Фазы 3).
     public string? ActiveProfileId => _activeProfileId;
     public string? ActiveMonitorAdapterDeviceName => _activeMonitorAdapterName;
 
-    public AppProfileEngine(BrightnessController controller, IAppProfileStore? store = null, IForegroundAppWatcher? watcher = null)
+    public AppProfileEngine(
+        BrightnessController controller,
+        IAppProfileStore? store = null,
+        IForegroundAppWatcher? watcher = null,
+        IScheduleStore? scheduleStore = null)
     {
         _controller = controller;
         _store = store ?? new JsonFileAppProfileStore();
         _watcher = watcher ?? new ForegroundAppWatcher();
+        _scheduleStore = scheduleStore ?? new JsonFileScheduleStore();
         _watcher.ForegroundChanged += OnForegroundChanged;
         _watcher.ReportCurrentForegroundWindow();
     }
@@ -69,7 +78,7 @@ public sealed class AppProfileEngine : IDisposable
 
     private void RestorePrevious()
     {
-        if (_activeMonitorAdapterName is null || _snapshotPercent is null)
+        if (_activeMonitorAdapterName is null)
         {
             return;
         }
@@ -77,10 +86,40 @@ public sealed class AppProfileEngine : IDisposable
         var monitor = _controller.Monitors.FirstOrDefault(m => m.AdapterDeviceName == _activeMonitorAdapterName);
         if (monitor is not null)
         {
-            _controller.SetBrightness(monitor, _snapshotPercent.Value);
+            // Снимок мог устареть, если расписание успело смениться, пока профиль был
+            // активен — поэтому вместо слепого отката к снимку сначала пересчитываем,
+            // что расписание хочет ПРЯМО СЕЙЧАС для этого монитора, и используем снимок
+            // только как запасной вариант (расписание выключено/не применимо к монитору).
+            var restoreValue = ComputeScheduleFallback(monitor) ?? _snapshotPercent;
+            if (restoreValue is not null)
+            {
+                _controller.SetBrightness(monitor, restoreValue.Value);
+            }
         }
 
         _snapshotPercent = null;
+    }
+
+    private int? ComputeScheduleFallback(MonitorInfo monitor)
+    {
+        var schedule = _scheduleStore.Load();
+        if (!schedule.IsEnabled || schedule.Rules.Count == 0)
+        {
+            return null;
+        }
+
+        var monitorKey = BrightnessController.GetMonitorKey(monitor);
+        var applicableRules = schedule.Rules
+            .Where(r => r.MonitorKeys.Count == 0 || r.MonitorKeys.Contains(monitorKey))
+            .OrderBy(r => r.Time)
+            .ToList();
+
+        if (applicableRules.Count == 0)
+        {
+            return null;
+        }
+
+        return ScheduleEngine.FindActiveRule(applicableRules, TimeOnly.FromDateTime(DateTime.Now)).Percent;
     }
 
     public void Dispose()

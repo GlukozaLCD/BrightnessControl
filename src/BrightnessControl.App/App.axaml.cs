@@ -50,8 +50,13 @@ public partial class App : Application
                 percent => _brightnessController?.SetAllBrightness(percent),
                 () => _brightnessController?.GetGlobalPacingMs() ?? 100);
             _hud = new BrightnessHudWindow();
-            _scheduleEngine = new ScheduleEngine(_brightnessController);
+            // Профиль приложения приоритетнее расписания: пока на мониторе активен
+            // подходящий-под-профиль процесс, расписание этот монитор не трогает
+            // (см. AppProfileEngine.ActiveMonitorAdapterDeviceName и FP5 Фазу 3).
             _appProfileEngine = new AppProfileEngine(_brightnessController);
+            _scheduleEngine = new ScheduleEngine(
+                _brightnessController,
+                isMonitorSuppressed: monitor => _appProfileEngine?.ActiveMonitorAdapterDeviceName == monitor.AdapterDeviceName);
 
             _trayService = new TrayService(
                 new Uri("avares://BrightnessControl.App/Assets/avalonia-logo.ico"),

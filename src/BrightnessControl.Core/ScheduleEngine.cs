@@ -10,14 +10,26 @@ public sealed class ScheduleEngine : IDisposable
 {
     private readonly BrightnessController _controller;
     private readonly IScheduleStore _store;
+    private readonly Func<MonitorInfo, bool>? _isMonitorSuppressed;
     private readonly Dictionary<string, string?> _lastActiveRuleId = new();
     private Timer? _timer;
     private bool _disposed;
 
-    public ScheduleEngine(BrightnessController controller, IScheduleStore? store = null, bool autoStart = true)
+    // isMonitorSuppressed: монитор, для которого сейчас возвращается true, полностью
+    // пропускается на этом тике — используется AppProfileEngine (FP5), чтобы профиль
+    // приложения был приоритетнее расписания, пока активен. lastActiveRuleId для
+    // такого монитора НЕ обновляется, поэтому как только подавление снимется, движок
+    // на следующем тике честно переприменит актуальное на тот момент правило (даже
+    // если формально это то же правило, что действовало до подавления).
+    public ScheduleEngine(
+        BrightnessController controller,
+        IScheduleStore? store = null,
+        bool autoStart = true,
+        Func<MonitorInfo, bool>? isMonitorSuppressed = null)
     {
         _controller = controller;
         _store = store ?? new JsonFileScheduleStore();
+        _isMonitorSuppressed = isMonitorSuppressed;
 
         if (autoStart)
         {
@@ -55,6 +67,11 @@ public sealed class ScheduleEngine : IDisposable
                 .ToList();
 
             if (applicableRules.Count == 0)
+            {
+                continue;
+            }
+
+            if (_isMonitorSuppressed?.Invoke(monitor) == true)
             {
                 continue;
             }
