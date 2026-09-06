@@ -1,12 +1,14 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
 using BrightnessControl.App.Services;
 using BrightnessControl.Core;
+using System.Diagnostics;
 
 namespace BrightnessControl.App.Views;
 
@@ -17,6 +19,7 @@ public partial class SettingsWindow : Window
     private readonly AppSettingsStore _appSettingsStore;
     private readonly TraySettings _traySettings;
     private readonly TraySettingsStore _traySettingsStore;
+    private readonly AppProfileEngine? _appProfileEngine;
     private readonly Action _onExitRequested;
     private readonly Dictionary<string, CoalescingBrightnessApplier> _perMonitorAppliers = new();
     private readonly List<Slider> _monitorSliders = new();
@@ -30,6 +33,7 @@ public partial class SettingsWindow : Window
         _appSettingsStore = null!;
         _traySettings = null!;
         _traySettingsStore = null!;
+        _appProfileEngine = null;
         _onExitRequested = () => { };
         InitializeComponent();
     }
@@ -40,6 +44,7 @@ public partial class SettingsWindow : Window
         AppSettingsStore appSettingsStore,
         TraySettings traySettings,
         TraySettingsStore traySettingsStore,
+        AppProfileEngine? appProfileEngine,
         Action onExitRequested)
     {
         _controller = controller;
@@ -47,6 +52,7 @@ public partial class SettingsWindow : Window
         _appSettingsStore = appSettingsStore;
         _traySettings = traySettings;
         _traySettingsStore = traySettingsStore;
+        _appProfileEngine = appProfileEngine;
         _onExitRequested = onExitRequested;
         InitializeComponent();
         BuildContent();
@@ -163,6 +169,7 @@ public partial class SettingsWindow : Window
         BuildTrayTab(this.FindControl<StackPanel>("TrayPanel")!);
         BuildAppearanceTab(this.FindControl<StackPanel>("AppearancePanel")!);
         BuildScheduleTab(this.FindControl<StackPanel>("SchedulePanel")!);
+        BuildAppProfilesTab(this.FindControl<StackPanel>("AppProfilesPanel")!);
     }
 
     private void BuildMonitorsTab(StackPanel root)
@@ -499,6 +506,385 @@ public partial class SettingsWindow : Window
             RefreshActiveNow();
         };
         root.Children.Add(addRuleButton);
+    }
+
+    private void BuildAppProfilesTab(StackPanel root)
+    {
+        var profileStore = new JsonFileAppProfileStore();
+        var profileSettings = profileStore.Load();
+
+        var enabledCheckBox = new CheckBox { Content = "Включить профили приложений", IsChecked = profileSettings.IsEnabled };
+        root.Children.Add(enabledCheckBox);
+
+        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
+        root.Children.Add(new TextBlock { Text = "Сейчас активно", FontWeight = Avalonia.Media.FontWeight.Bold });
+        var activeNowPanel = new StackPanel { Spacing = 2 };
+        root.Children.Add(activeNowPanel);
+
+        void RefreshActiveNow()
+        {
+            activeNowPanel.Children.Clear();
+            var current = profileStore.Load();
+            var activeProfileId = _appProfileEngine?.ActiveProfileId;
+            var activeMonitorAdapterName = _appProfileEngine?.ActiveMonitorAdapterDeviceName;
+
+            if (!current.IsEnabled)
+            {
+                activeNowPanel.Children.Add(new TextBlock { Text = "Профили выключены.", FontStyle = Avalonia.Media.FontStyle.Italic });
+                return;
+            }
+
+            if (activeProfileId is null)
+            {
+                activeNowPanel.Children.Add(new TextBlock { Text = "Сейчас ни один профиль не активен.", FontStyle = Avalonia.Media.FontStyle.Italic });
+                return;
+            }
+
+            var activeProfile = current.Profiles.FirstOrDefault(p => p.Id == activeProfileId);
+            var monitor = _controller.Monitors.FirstOrDefault(m => m.AdapterDeviceName == activeMonitorAdapterName);
+            var monitorLabel = monitor is not null ? MonitorLabel.Format(monitor) : activeMonitorAdapterName ?? "?";
+
+            activeNowPanel.Children.Add(new TextBlock
+            {
+                Text = activeProfile is not null
+                    ? $"«{activeProfile.MatchValue}» → {activeProfile.Percent}% на {monitorLabel}"
+                    : $"Профиль {activeProfileId} на {monitorLabel}",
+            });
+        }
+
+        enabledCheckBox.IsCheckedChanged += (_, _) =>
+        {
+            profileSettings.IsEnabled = enabledCheckBox.IsChecked ?? true;
+            profileStore.Save(profileSettings);
+            RefreshActiveNow();
+        };
+
+        RefreshActiveNow();
+        var activeNowTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
+        activeNowTimer.Tick += (_, _) => RefreshActiveNow();
+        activeNowTimer.Start();
+
+        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
+        root.Children.Add(new TextBlock { Text = "Профили", FontWeight = Avalonia.Media.FontWeight.Bold });
+        var profilesListPanel = new StackPanel { Spacing = 6 };
+
+        void RefreshProfilesList()
+        {
+            profilesListPanel.Children.Clear();
+
+            foreach (var profile in profileSettings.Profiles)
+            {
+                var matchTypeText = profile.MatchType == AppMatchType.ProcessName ? "процесс" : "заголовок";
+
+                var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto") };
+                var typeText = new TextBlock { Text = matchTypeText, Width = 70, VerticalAlignment = VerticalAlignment.Center };
+                var valueText = new TextBlock { Text = profile.MatchValue, VerticalAlignment = VerticalAlignment.Center, TextWrapping = Avalonia.Media.TextWrapping.Wrap };
+                var percentText = new TextBlock { Text = $"{profile.Percent}%", Width = 50, VerticalAlignment = VerticalAlignment.Center };
+                var removeButton = new Button { Content = "Удалить" };
+                removeButton.Click += (_, _) =>
+                {
+                    profileSettings.Profiles.Remove(profile);
+                    profileStore.Save(profileSettings);
+                    RefreshProfilesList();
+                };
+
+                Grid.SetColumn(typeText, 0);
+                Grid.SetColumn(valueText, 1);
+                Grid.SetColumn(percentText, 2);
+                Grid.SetColumn(removeButton, 3);
+                row.Children.Add(typeText);
+                row.Children.Add(valueText);
+                row.Children.Add(percentText);
+                row.Children.Add(removeButton);
+
+                profilesListPanel.Children.Add(row);
+            }
+
+            if (profileSettings.Profiles.Count == 0)
+            {
+                profilesListPanel.Children.Add(new TextBlock { Text = "(профилей ещё нет)", FontStyle = Avalonia.Media.FontStyle.Italic });
+            }
+        }
+
+        RefreshProfilesList();
+        root.Children.Add(profilesListPanel);
+
+        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
+        root.Children.Add(new TextBlock { Text = "Новый профиль", FontWeight = Avalonia.Media.FontWeight.Bold });
+
+        var matchTypeRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        matchTypeRow.Children.Add(new TextBlock { Text = "Определять по:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
+        var matchTypeCombo = new ComboBox
+        {
+            ItemsSource = new[] { "Запущенный процесс (из списка)", "Заголовок окна (текст)" },
+            SelectedIndex = 0,
+            MinWidth = 220,
+        };
+        matchTypeRow.Children.Add(matchTypeCombo);
+        root.Children.Add(matchTypeRow);
+
+        var processPickRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+
+        // Все переменные, на которые ссылаются локальные функции/шаблоны ниже, объявлены
+        // здесь заранее (просто как объекты, без ItemTemplate) — иначе анализ определённого
+        // присваивания C# ругается, даже если реально эти обработчики выполнятся значительно позже.
+        var processAutoComplete = new AutoCompleteBox
+        {
+            MinWidth = 260,
+            FilterMode = AutoCompleteFilterMode.Contains,
+            MinimumPrefixLength = 0,
+        };
+        var hiddenProcessesLabel = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
+        var hiddenProcessesRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        var hiddenProcessesCombo = new ComboBox { MinWidth = 200 };
+
+        // Текст "Скрыто процессов: N" — отдельный TextBlock рядом с ComboBox, а не его
+        // PlaceholderText: раньше рядом с этой надписью был виден плюсик — ComboBox в
+        // закрытом состоянии иногда показывал шаблон первого пункта вместо плейсхолдера.
+        // Вынос текста наружу и принудительный сброс выбора (см. SelectionChanged ниже)
+        // полностью убирают этот эффект.
+        hiddenProcessesCombo.SelectionChanged += (_, _) =>
+        {
+            if (hiddenProcessesCombo.SelectedIndex != -1)
+            {
+                hiddenProcessesCombo.SelectedIndex = -1;
+            }
+        };
+
+        // Первый пункт списка — не процесс, а спец-строка "вернуть все сразу"
+        // (жирный текст + крупный плюс, кликабельна целиком). Ниже неё —
+        // обычные пункты по одному процессу с плюсом, для точечного возврата.
+        // Значение — случайный GUID, гарантированно не совпадёт с реальным именем процесса.
+        var restoreAllSentinel = Guid.NewGuid().ToString();
+
+        hiddenProcessesCombo.ItemTemplate = new FuncDataTemplate<string>((name, _) =>
+        {
+            if (name == restoreAllSentinel)
+            {
+                var allRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(2) };
+                var allText = new TextBlock
+                {
+                    Text = "Вернуть все скрытые процессы",
+                    FontWeight = Avalonia.Media.FontWeight.Bold,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                var restoreAllGlyph = new Border
+                {
+                    Width = 24,
+                    Height = 24,
+                    CornerRadius = new CornerRadius(12),
+                    Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0x2E, 0x8B, 0x3D)),
+                    Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand),
+                    Child = new TextBlock
+                    {
+                        Text = "+",
+                        Foreground = Avalonia.Media.Brushes.White,
+                        FontSize = 16,
+                        FontWeight = Avalonia.Media.FontWeight.Bold,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                };
+                allRow.PointerPressed += (_, e) =>
+                {
+                    e.Handled = true;
+                    RestoreAllProcessNames();
+                };
+
+                Grid.SetColumn(allText, 0);
+                Grid.SetColumn(restoreAllGlyph, 1);
+                allRow.Children.Add(allText);
+                allRow.Children.Add(restoreAllGlyph);
+                return allRow;
+            }
+
+            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(2) };
+            var text = new TextBlock { Text = name, VerticalAlignment = VerticalAlignment.Center };
+
+            var restoreGlyph = new Border
+            {
+                Width = 20,
+                Height = 20,
+                CornerRadius = new CornerRadius(10),
+                Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0x3C, 0xA0, 0x50)),
+                Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand),
+                Child = new TextBlock
+                {
+                    Text = "+",
+                    Foreground = Avalonia.Media.Brushes.White,
+                    FontSize = 13,
+                    FontWeight = Avalonia.Media.FontWeight.Bold,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+            };
+            restoreGlyph.PointerPressed += (_, e) =>
+            {
+                e.Handled = true;
+                RestoreProcessName(name);
+            };
+
+            Grid.SetColumn(text, 0);
+            Grid.SetColumn(restoreGlyph, 1);
+            row.Children.Add(text);
+            row.Children.Add(restoreGlyph);
+            return row;
+        });
+
+        void RestoreProcessName(string name)
+        {
+            _appSettings.HiddenProcessNames.RemoveAll(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+            _appSettingsStore.Save(_appSettings);
+            RefreshRunningProcesses();
+            RefreshHiddenLink();
+        }
+
+        void RestoreAllProcessNames()
+        {
+            _appSettings.HiddenProcessNames.Clear();
+            _appSettingsStore.Save(_appSettings);
+            RefreshRunningProcesses();
+            RefreshHiddenLink();
+        }
+
+        void RefreshHiddenLink()
+        {
+            var hiddenNames = _appSettings.HiddenProcessNames.OrderBy(n => n).ToList();
+            hiddenProcessesRow.IsVisible = hiddenNames.Count > 0;
+            hiddenProcessesCombo.ItemsSource = hiddenNames.Count > 0
+                ? new List<string> { restoreAllSentinel }.Concat(hiddenNames).ToList()
+                : hiddenNames;
+            hiddenProcessesLabel.Text = $"Скрыто процессов: {hiddenNames.Count}";
+            hiddenProcessesCombo.SelectedIndex = -1;
+        }
+
+        // Каждый пункт списка — имя процесса + серый кружок с "−" для скрытия
+        // ненужных процессов из подсказок (например, служебных). Скрытые запоминаются
+        // в AppSettings.HiddenProcessNames и не показываются, пока их явно не вернуть.
+        processAutoComplete.ItemTemplate = new FuncDataTemplate<string>((name, _) =>
+        {
+            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(2) };
+            var text = new TextBlock { Text = name, VerticalAlignment = VerticalAlignment.Center };
+
+            var hideGlyph = new Border
+            {
+                Width = 16,
+                Height = 16,
+                CornerRadius = new CornerRadius(8),
+                Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0x90, 0x90, 0x90)),
+                Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand),
+                Child = new TextBlock
+                {
+                    Text = "−",
+                    Foreground = Avalonia.Media.Brushes.White,
+                    FontSize = 10,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+            };
+            hideGlyph.PointerPressed += (_, e) =>
+            {
+                // Иначе клик по крестику также сработал бы как выбор всего пункта списка.
+                e.Handled = true;
+                HideProcessName(name);
+            };
+
+            Grid.SetColumn(text, 0);
+            Grid.SetColumn(hideGlyph, 1);
+            row.Children.Add(text);
+            row.Children.Add(hideGlyph);
+            return row;
+        });
+
+        var openAllButton = new Button { Content = "▼", Width = 32 };
+        ToolTip.SetTip(openAllButton, "Показать список всех запущенных процессов");
+        var refreshProcessesButton = new Button { Content = "Обновить список" };
+
+        void RefreshRunningProcesses()
+        {
+            var hidden = new HashSet<string>(_appSettings.HiddenProcessNames, StringComparer.OrdinalIgnoreCase);
+            var names = Process.GetProcesses()
+                .Where(p => p.MainWindowHandle != IntPtr.Zero && !string.IsNullOrWhiteSpace(p.MainWindowTitle))
+                .Select(p => p.ProcessName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(n => !hidden.Contains(n))
+                .OrderBy(n => n)
+                .ToList();
+
+            processAutoComplete.ItemsSource = names;
+        }
+
+        void HideProcessName(string name)
+        {
+            if (!_appSettings.HiddenProcessNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+            {
+                _appSettings.HiddenProcessNames.Add(name);
+                _appSettingsStore.Save(_appSettings);
+            }
+
+            RefreshRunningProcesses();
+            RefreshHiddenLink();
+        }
+
+        openAllButton.Click += (_, _) =>
+        {
+            RefreshRunningProcesses();
+            processAutoComplete.IsDropDownOpen = true;
+        };
+        refreshProcessesButton.Click += (_, _) => RefreshRunningProcesses();
+        RefreshRunningProcesses();
+        processPickRow.Children.Add(processAutoComplete);
+        processPickRow.Children.Add(openAllButton);
+        processPickRow.Children.Add(refreshProcessesButton);
+        root.Children.Add(processPickRow);
+
+        hiddenProcessesRow.Children.Add(hiddenProcessesLabel);
+        hiddenProcessesRow.Children.Add(hiddenProcessesCombo);
+        root.Children.Add(hiddenProcessesRow);
+        RefreshHiddenLink();
+
+        var titleValueRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, IsVisible = false };
+        titleValueRow.Children.Add(new TextBlock { Text = "Часть заголовка окна:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
+        var titleValueInput = new TextBox { Width = 260 };
+        titleValueRow.Children.Add(titleValueInput);
+        root.Children.Add(titleValueRow);
+
+        matchTypeCombo.SelectionChanged += (_, _) =>
+        {
+            var isProcess = matchTypeCombo.SelectedIndex == 0;
+            processPickRow.IsVisible = isProcess;
+            titleValueRow.IsVisible = !isProcess;
+        };
+
+        var percentRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        percentRow.Children.Add(new TextBlock { Text = "Яркость, %:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
+        var percentInput = new NumericUpDown { Minimum = 0, Maximum = 100, Value = 50, Width = 150, FormatString = "0" };
+        percentRow.Children.Add(percentInput);
+        root.Children.Add(percentRow);
+
+        var addProfileButton = new Button { Content = "Добавить профиль" };
+        addProfileButton.Click += (_, _) =>
+        {
+            var isProcess = matchTypeCombo.SelectedIndex == 0;
+            var matchValue = isProcess
+                ? processAutoComplete.Text
+                : titleValueInput.Text;
+
+            if (string.IsNullOrWhiteSpace(matchValue))
+            {
+                return;
+            }
+
+            profileSettings.Profiles.Add(new AppProfile
+            {
+                MatchType = isProcess ? AppMatchType.ProcessName : AppMatchType.WindowTitle,
+                MatchValue = matchValue.Trim(),
+                Percent = (int)(percentInput.Value ?? 50),
+            });
+            profileStore.Save(profileSettings);
+            RefreshProfilesList();
+        };
+        root.Children.Add(addProfileButton);
     }
 
     private ComboBox BuildThemeSelector()

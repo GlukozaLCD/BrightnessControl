@@ -47,6 +47,11 @@
                         <StackPanel x:Name="SchedulePanel" Margin="16" Spacing="8" />
                     </ScrollViewer>
                 </TabItem>
+                <TabItem Header="Профили приложений">
+                    <ScrollViewer>
+                        <StackPanel x:Name="AppProfilesPanel" Margin="16" Spacing="8" />
+                    </ScrollViewer>
+                </TabItem>
             </TabControl>
         </DockPanel>
     </Border>

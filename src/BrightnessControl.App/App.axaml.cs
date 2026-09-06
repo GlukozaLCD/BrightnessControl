@@ -21,6 +21,7 @@ public partial class App : Application
     private SettingsWindow? _settingsWindow;
     private CoalescingBrightnessApplier? _globalApplier;
     private ScheduleEngine? _scheduleEngine;
+    private AppProfileEngine? _appProfileEngine;
     private int _globalPercent = 50;
     private int? _stickyClungValue;
 
@@ -50,6 +51,7 @@ public partial class App : Application
                 () => _brightnessController?.GetGlobalPacingMs() ?? 100);
             _hud = new BrightnessHudWindow();
             _scheduleEngine = new ScheduleEngine(_brightnessController);
+            _appProfileEngine = new AppProfileEngine(_brightnessController);
 
             _trayService = new TrayService(
                 new Uri("avares://BrightnessControl.App/Assets/avalonia-logo.ico"),
@@ -117,6 +119,7 @@ public partial class App : Application
                 _appSettingsStore ?? new AppSettingsStore(),
                 _traySettings ?? new TraySettings(),
                 _traySettingsStore ?? new TraySettingsStore(),
+                _appProfileEngine,
                 () => desktop.Shutdown());
             _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         }

@@ -17,6 +17,10 @@ public sealed class AppProfileEngine : IDisposable
     private int? _snapshotPercent;
     private bool _disposed;
 
+    // Для живой индикации "сейчас активно" в GUI (см. FP5 Фаза 2).
+    public string? ActiveProfileId => _activeProfileId;
+    public string? ActiveMonitorAdapterDeviceName => _activeMonitorAdapterName;
+
     public AppProfileEngine(BrightnessController controller, IAppProfileStore? store = null, IForegroundAppWatcher? watcher = null)
     {
         _controller = controller;
