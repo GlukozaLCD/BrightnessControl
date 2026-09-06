@@ -1,6 +1,7 @@
 using System.Drawing;
 using System.Runtime.InteropServices;
 using BrightnessControl.App.Native;
+using BrightnessControl.Core;
 
 namespace BrightnessControl.App.Services;
 
@@ -41,6 +42,7 @@ public sealed class TrayService : IDisposable
 
     public event Action<TrayScrollEventArgs>? ScrollNotches;
     public event Action<TrayClickEventArgs>? RightClicked;
+    public event Action<TrayClickEventArgs>? LeftClicked;
 
     public TrayService(Uri iconUri, string tooltip)
     {
@@ -136,6 +138,11 @@ public sealed class TrayService : IDisposable
                 User32Native.GetCursorPos(out var pt);
                 RightClicked?.Invoke(new TrayClickEventArgs(pt.X, pt.Y));
             }
+            else if (mouseMsg == User32Native.WM_LBUTTONUP)
+            {
+                User32Native.GetCursorPos(out var pt);
+                LeftClicked?.Invoke(new TrayClickEventArgs(pt.X, pt.Y));
+            }
 
             return IntPtr.Zero;
         }
@@ -166,6 +173,19 @@ public sealed class TrayService : IDisposable
 
     private bool IsPointOverOurIcon(User32Native.POINT pt)
     {
+        if (!TryGetIconRect(out var rect))
+        {
+            return false;
+        }
+
+        return pt.X >= rect.X && pt.X < rect.X + rect.Width && pt.Y >= rect.Y && pt.Y < rect.Y + rect.Height;
+    }
+
+    // Нужен вызывающему коду (App.axaml.cs), чтобы прицепить поповер глобального
+    // слайдера точно к иконке трея (FP9 Фаза 2) — не по центру монитора, как окно
+    // настроек. Возвращает дружелюбный MonitorBounds, а не сырой Shell32.RECT.
+    public bool TryGetIconRect(out MonitorBounds rect)
+    {
         var identifier = new Shell32.NOTIFYICONIDENTIFIER
         {
             cbSize = (uint)Marshal.SizeOf<Shell32.NOTIFYICONIDENTIFIER>(),
@@ -174,12 +194,14 @@ public sealed class TrayService : IDisposable
             guidItem = Guid.Empty,
         };
 
-        if (Shell32.Shell_NotifyIconGetRect(ref identifier, out var rect) != 0)
+        if (Shell32.Shell_NotifyIconGetRect(ref identifier, out var native) != 0)
         {
+            rect = default;
             return false;
         }
 
-        return pt.X >= rect.Left && pt.X < rect.Right && pt.Y >= rect.Top && pt.Y < rect.Bottom;
+        rect = new MonitorBounds(native.Left, native.Top, native.Right - native.Left, native.Bottom - native.Top);
+        return true;
     }
 
     // Хэндл иконки должен жить, пока она зарегистрирована в трее — Icon.Dispose()

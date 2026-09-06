@@ -4,6 +4,7 @@ namespace BrightnessControl.App.Native;
 
 internal static class User32Native
 {
+    public const uint WM_LBUTTONUP = 0x0202;
     public const uint WM_RBUTTONUP = 0x0205;
     public const uint WM_CONTEXTMENU = 0x007B;
     public const uint WM_MOUSEWHEEL = 0x020A;

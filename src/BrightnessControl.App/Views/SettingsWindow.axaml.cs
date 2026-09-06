@@ -6,6 +6,7 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using BrightnessControl.App.Services;
 using BrightnessControl.Core;
 using System.Diagnostics;
@@ -22,8 +23,16 @@ public partial class SettingsWindow : Window
     private readonly AppProfileEngine? _appProfileEngine;
     private readonly IdleEngine? _idleEngine;
     private readonly Action _onExitRequested;
-    private readonly Dictionary<string, CoalescingBrightnessApplier> _perMonitorAppliers = new();
-    private readonly List<Slider> _monitorSliders = new();
+
+    // Двухуровневая навигация (FP9 Фаза 3): _selectedCategory == null — показан
+    // список категорий верхнего уровня; иначе — подкатегории ВЫБРАННОЙ категории
+    // (список целиком подменяется, а не разворачивается на месте — решено заранее).
+    private List<NavCategory> _rootCategories = new();
+    private NavCategory? _selectedCategory;
+    private bool _navOnRight = true;
+
+    private sealed record NavCategory(string Title, List<NavSubcategory> Subcategories);
+    private sealed record NavSubcategory(string Title, Action<StackPanel> BuildContent);
 
     // Нужен только для XAML-дизайнера/превью — реальный экземпляр всегда создаётся
     // через конструктор ниже, с реальными зависимостями.
@@ -78,6 +87,11 @@ public partial class SettingsWindow : Window
     {
         var closeButton = this.FindControl<Border>("CloseButton")!;
         var glyph = this.FindControl<TextBlock>("CloseButtonGlyph")!;
+
+        // Случайный клик закрывает всё приложение (не просто окно настроек) — легко
+        // промахнуться мимо более безобидной цели. Требуем зажатый Shift как
+        // защиту от случайного закрытия.
+        ToolTip.SetTip(closeButton, "Удерживайте Shift и кликните, чтобы выйти из программы");
 
         var red = Avalonia.Media.Color.FromRgb(0xE8, 0x11, 0x23);
         var solidRed = new Avalonia.Media.SolidColorBrush(red);
@@ -145,7 +159,18 @@ public partial class SettingsWindow : Window
         {
             glyph.FontWeight = Avalonia.Media.FontWeight.Normal;
         };
-        closeButton.PointerPressed += (_, _) => _onExitRequested();
+        closeButton.PointerPressed += (_, e) =>
+        {
+            if (e.KeyModifiers.HasFlag(KeyModifiers.Shift))
+            {
+                _onExitRequested();
+            }
+            else
+            {
+                // Обычный клик — просто скрывает окно настроек, как и клик мимо.
+                Close();
+            }
+        };
     }
 
     private void InitializeComponent()
@@ -169,22 +194,124 @@ public partial class SettingsWindow : Window
 
     private void BuildContent()
     {
-        BuildMonitorsTab(this.FindControl<StackPanel>("MonitorsPanel")!);
-        BuildTrayTab(this.FindControl<StackPanel>("TrayPanel")!);
-        BuildAppearanceTab(this.FindControl<StackPanel>("AppearancePanel")!);
-        BuildScheduleTab(this.FindControl<StackPanel>("SchedulePanel")!);
-        BuildAppProfilesTab(this.FindControl<StackPanel>("AppProfilesPanel")!);
-        BuildIdleTab(this.FindControl<StackPanel>("IdlePanel")!);
+        _rootCategories = new List<NavCategory>
+        {
+            new("Настройки", new List<NavSubcategory>
+            {
+                new("Слайдеры яркости", BuildSliderStepTab),
+                new("Ярлык трея", BuildTrayTab),
+                new("Оформление", BuildAppearanceTab),
+            }),
+            new("Автоматизация", new List<NavSubcategory>
+            {
+                new("Расписание", BuildScheduleTab),
+                new("Профили приложений", BuildAppProfilesTab),
+                new("Простой", BuildIdleTab),
+            }),
+        };
+
+        SetupNavFlip();
+        RenderNavList();
+        SelectSubcategory(_rootCategories[0].Subcategories[0]);
     }
 
-    private void BuildMonitorsTab(StackPanel root)
+    // Кнопка сверху списка перекидывает сам список категорий между правым и левым
+    // краем окна — стрелка всегда показывает, КУДА он поедет по клику (не где он
+    // сейчас), поэтому разворачивается в противоположную сторону при каждом клике.
+    private void SetupNavFlip()
     {
-        root.Children.Add(new TextBlock { Text = "Шаг слайдеров", FontWeight = Avalonia.Media.FontWeight.Bold });
-        root.Children.Add(new TextBlock
+        var grid = this.FindControl<Grid>("NavContentGrid")!;
+        var navBorder = this.FindControl<Border>("NavBorder")!;
+        var contentScroll = (Control)grid.Children.First(c => c is ScrollViewer);
+        var flipButton = this.FindControl<Button>("NavFlipButton")!;
+
+        flipButton.Click += (_, _) =>
         {
-            Text = "Слайдеры ниже \"прилипают\" к этому шагу — отдельно от шага скролла над иконкой трея (вкладка \"Трей\").",
-            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
-        });
+            _navOnRight = !_navOnRight;
+
+            // Раньше менялся только Grid.Column у детей, а сами ColumnDefinitions
+            // оставались "*,Auto" всегда — при переносе налево список попадал в
+            // "резиновую" звёздочную колонку вместо колонки под свой фиксированный
+            // размер и не прижимался к углу, а "плавал". Колонки нужно переставлять
+            // местами вместе с детьми, а не только менять им индекс.
+            grid.ColumnDefinitions = _navOnRight
+                ? new ColumnDefinitions("*,Auto")
+                : new ColumnDefinitions("Auto,*");
+            Grid.SetColumn(navBorder, _navOnRight ? 1 : 0);
+            Grid.SetColumn(contentScroll, _navOnRight ? 0 : 1);
+            navBorder.HorizontalAlignment = _navOnRight ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+            flipButton.Content = _navOnRight ? "←" : "→";
+        };
+    }
+
+    private void RenderNavList()
+    {
+        var navList = this.FindControl<StackPanel>("NavList")!;
+        navList.Children.Clear();
+
+        if (_selectedCategory is null)
+        {
+            foreach (var category in _rootCategories)
+            {
+                var button = new Button
+                {
+                    Content = category.Title,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    HorizontalContentAlignment = HorizontalAlignment.Left,
+                };
+                button.Click += (_, _) =>
+                {
+                    _selectedCategory = category;
+                    RenderNavList();
+                    SelectSubcategory(category.Subcategories[0]);
+                };
+                navList.Children.Add(button);
+            }
+
+            return;
+        }
+
+        var backButton = new Button
+        {
+            Content = "← Назад",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+        };
+        backButton.Click += (_, _) =>
+        {
+            _selectedCategory = null;
+            RenderNavList();
+        };
+        navList.Children.Add(backButton);
+        navList.Children.Add(new Separator { Margin = new Thickness(0, 4, 0, 4) });
+
+        foreach (var subcategory in _selectedCategory.Subcategories)
+        {
+            var button = new Button
+            {
+                Content = subcategory.Title,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+            };
+            button.Click += (_, _) => SelectSubcategory(subcategory);
+            navList.Children.Add(button);
+        }
+    }
+
+    private void SelectSubcategory(NavSubcategory subcategory)
+    {
+        var contentPanel = this.FindControl<StackPanel>("ContentPanel")!;
+        contentPanel.Children.Clear();
+        subcategory.BuildContent(contentPanel);
+    }
+
+    // Всё, что осталось от бывшей вкладки "Мониторы" — сами слайдеры яркости
+    // переехали в поповер трея по левому клику (FP9 Фаза 2, GlobalSliderPopup).
+    private void BuildSliderStepTab(StackPanel root)
+    {
+        var sliderStepHeader = new TextBlock { Text = "Шаг слайдеров", FontWeight = Avalonia.Media.FontWeight.Bold };
+        ToolTip.SetTip(sliderStepHeader, "Слайдеры в поповере трея (левый клик по иконке) \"прилипают\" к этому шагу — отдельно от шага скролла над иконкой трея (см. \"Ярлык трея\").");
+        root.Children.Add(sliderStepHeader);
 
         var sliderStepRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         sliderStepRow.Children.Add(new TextBlock { Text = "Шаг слайдера, %:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
@@ -201,47 +328,9 @@ public partial class SettingsWindow : Window
             var value = (int)(sliderStepUpDown.Value ?? 5);
             _appSettings.SliderStepPercent = value;
             _appSettingsStore.Save(_appSettings);
-            foreach (var slider in _monitorSliders)
-            {
-                slider.TickFrequency = value;
-            }
         };
         sliderStepRow.Children.Add(sliderStepUpDown);
         root.Children.Add(sliderStepRow);
-
-        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
-        root.Children.Add(new TextBlock { Text = "Все мониторы", FontWeight = Avalonia.Media.FontWeight.Bold });
-
-        // "Все сразу" — чистый синхронизатор: сам не пишет в железо, а просто
-        // двигает слайдер каждого монитора, который уже сам отвечает за запись.
-        AddSliderRow(root, "Все сразу", ComputeAveragePercent(), _appSettings.SliderStepPercent, percent =>
-        {
-            foreach (var slider in _monitorSliders)
-            {
-                slider.Value = percent;
-            }
-        });
-
-        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
-        root.Children.Add(new TextBlock { Text = "По отдельности", FontWeight = Avalonia.Media.FontWeight.Bold });
-
-        foreach (var monitor in _controller.Monitors)
-        {
-            var current = _controller.GetBrightness(monitor)?.Percent ?? 50;
-            var slider = AddSliderRow(root, MonitorLabel.Format(monitor), current, _appSettings.SliderStepPercent, percent =>
-            {
-                if (!_perMonitorAppliers.TryGetValue(monitor.DeviceId, out var applier))
-                {
-                    applier = new CoalescingBrightnessApplier(
-                        p => _controller.SetBrightness(monitor, p),
-                        () => _controller.GetPacingMs(monitor));
-                    _perMonitorAppliers[monitor.DeviceId] = applier;
-                }
-
-                applier.Request(percent);
-            });
-            _monitorSliders.Add(slider);
-        }
     }
 
     private void BuildTrayTab(StackPanel root)
@@ -275,14 +364,10 @@ public partial class SettingsWindow : Window
         root.Children.Add(stepRow);
 
         root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
-        root.Children.Add(new TextBlock { Text = "\"Липкие\" значения", FontWeight = Avalonia.Media.FontWeight.Bold });
-        root.Children.Add(new TextBlock
-        {
-            Text = "При скролле яркость на этих значениях ненадолго задерживается (один щелчок " +
-                   "колеса), чтобы легко было попасть точно в них. Остальные проценты " +
-                   "по-прежнему доступны без ограничений.",
-            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
-        });
+        var stickyHeader = new TextBlock { Text = "\"Липкие\" значения", FontWeight = Avalonia.Media.FontWeight.Bold };
+        ToolTip.SetTip(stickyHeader, "При скролле яркость на этих значениях ненадолго задерживается (один щелчок " +
+            "колеса), чтобы легко было попасть точно в них. Остальные проценты по-прежнему доступны без ограничений.");
+        root.Children.Add(stickyHeader);
 
         var stickyListPanel = new StackPanel { Spacing = 6 };
 
@@ -413,6 +498,26 @@ public partial class SettingsWindow : Window
 
         root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
         root.Children.Add(new TextBlock { Text = "Правила", FontWeight = Avalonia.Media.FontWeight.Bold });
+
+        // Заголовки колонок — раньше их не было, и сразу не было понятно, что
+        // означает каждое число в строке правила (FP9 Фаза 5: форма расписания
+        // была "странной и непонятной").
+        var rulesHeaderRow = new Grid { ColumnDefinitions = new ColumnDefinitions("60,50,*,Auto") };
+        var rulesHeaderStyle = new Action<TextBlock>(t => t.FontWeight = Avalonia.Media.FontWeight.Bold);
+        var timeHeader = new TextBlock { Text = "Время" };
+        var percentHeader = new TextBlock { Text = "Яркость" };
+        var scopeHeader = new TextBlock { Text = "Мониторы" };
+        rulesHeaderStyle(timeHeader);
+        rulesHeaderStyle(percentHeader);
+        rulesHeaderStyle(scopeHeader);
+        Grid.SetColumn(timeHeader, 0);
+        Grid.SetColumn(percentHeader, 1);
+        Grid.SetColumn(scopeHeader, 2);
+        rulesHeaderRow.Children.Add(timeHeader);
+        rulesHeaderRow.Children.Add(percentHeader);
+        rulesHeaderRow.Children.Add(scopeHeader);
+        root.Children.Add(rulesHeaderRow);
+
         var rulesListPanel = new StackPanel { Spacing = 6 };
 
         void RefreshRulesList()
@@ -428,9 +533,9 @@ public partial class SettingsWindow : Window
                             ? MonitorLabel.Format(found)
                             : key));
 
-                var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*,Auto") };
-                var timeText = new TextBlock { Text = $"{rule.Time:HH:mm}", Width = 60, VerticalAlignment = VerticalAlignment.Center };
-                var percentText = new TextBlock { Text = $"{rule.Percent}%", Width = 50, VerticalAlignment = VerticalAlignment.Center };
+                var row = new Grid { ColumnDefinitions = new ColumnDefinitions("60,50,*,Auto") };
+                var timeText = new TextBlock { Text = $"{rule.Time:HH:mm}", VerticalAlignment = VerticalAlignment.Center };
+                var percentText = new TextBlock { Text = $"{rule.Percent}%", VerticalAlignment = VerticalAlignment.Center };
                 var scopeLabel = new TextBlock { Text = scopeText, VerticalAlignment = VerticalAlignment.Center, TextWrapping = Avalonia.Media.TextWrapping.Wrap };
                 var removeButton = new Button { Content = "Удалить" };
                 removeButton.Click += (_, _) =>
@@ -463,39 +568,77 @@ public partial class SettingsWindow : Window
         root.Children.Add(rulesListPanel);
 
         root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
-        root.Children.Add(new TextBlock { Text = "Новое правило", FontWeight = Avalonia.Media.FontWeight.Bold });
 
-        var timePicker = new TimePicker { SelectedTime = new TimeSpan(8, 0, 0) };
-        root.Children.Add(timePicker);
+        // Визуально отделённая карточка для формы создания правила — раньше поля
+        // шли сплошным списком без границ, сливаясь со списком уже существующих
+        // правил выше (FP9 Фаза 5).
+        var newRuleCard = new Border
+        {
+            BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x40, 0x80, 0x80, 0x80)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(12),
+        };
+        var newRulePanel = new StackPanel { Spacing = 8 };
+        newRuleCard.Child = newRulePanel;
+
+        newRulePanel.Children.Add(new TextBlock { Text = "Новое правило", FontWeight = Avalonia.Media.FontWeight.Bold });
+
+        // Крупные читаемые цифры "12:40" вместо NumericUpDown (тот оказался слишком
+        // узким — виден был почти только край со стрелочками, а не само число).
+        // Прокрутка колеса над часом/минутой — ±1 к целому числу; с зажатым Shift —
+        // точнее: над десятками ±10, над единицами ±1 (см. BuildScrollableTwoDigit).
+        var hour = 8;
+        var minute = 0;
+        var hourControl = BuildScrollableTwoDigit(() => hour, v => hour = v, 0, 23);
+        var minuteControl = BuildScrollableTwoDigit(() => minute, v => minute = v, 0, 59);
+
+        var timeRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        timeRow.Children.Add(new TextBlock { Text = "Время:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
+        timeRow.Children.Add(hourControl);
+        timeRow.Children.Add(new TextBlock { Text = ":", VerticalAlignment = VerticalAlignment.Center, FontSize = 18, FontWeight = Avalonia.Media.FontWeight.Bold });
+        timeRow.Children.Add(minuteControl);
+        newRulePanel.Children.Add(timeRow);
 
         var percentRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         percentRow.Children.Add(new TextBlock { Text = "Яркость, %:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
         var percentInput = new NumericUpDown { Minimum = 0, Maximum = 100, Value = 80, Width = 150, FormatString = "0" };
         percentRow.Children.Add(percentInput);
-        root.Children.Add(percentRow);
+        newRulePanel.Children.Add(percentRow);
 
         var allMonitorsCheckBox = new CheckBox { Content = "Все мониторы", IsChecked = true };
-        root.Children.Add(allMonitorsCheckBox);
+        newRulePanel.Children.Add(allMonitorsCheckBox);
 
+        // Список мониторов теперь виден ВСЕГДА (раньше прятался, пока не снять
+        // "Все мониторы" — не было понятно, что выбор вообще есть). Чекбокс "Все
+        // мониторы" просто отмечает/блокирует остальные, а не скрывает список.
         var monitorCheckBoxes = new List<(MonitorInfo Monitor, CheckBox CheckBox)>();
-        var monitorsPickPanel = new StackPanel { Spacing = 4, IsVisible = false };
+        var monitorsPickPanel = new StackPanel { Spacing = 4, Margin = new Thickness(20, 0, 0, 0) };
         foreach (var monitor in _controller.Monitors)
         {
-            var checkBox = new CheckBox { Content = MonitorLabel.Format(monitor) };
+            var checkBox = new CheckBox { Content = MonitorLabel.Format(monitor), IsChecked = true, IsEnabled = false };
             monitorCheckBoxes.Add((monitor, checkBox));
             monitorsPickPanel.Children.Add(checkBox);
         }
 
         allMonitorsCheckBox.IsCheckedChanged += (_, _) =>
         {
-            monitorsPickPanel.IsVisible = allMonitorsCheckBox.IsChecked != true;
+            var allSelected = allMonitorsCheckBox.IsChecked == true;
+            foreach (var (_, checkBox) in monitorCheckBoxes)
+            {
+                checkBox.IsEnabled = !allSelected;
+                if (allSelected)
+                {
+                    checkBox.IsChecked = true;
+                }
+            }
         };
-        root.Children.Add(monitorsPickPanel);
+        newRulePanel.Children.Add(monitorsPickPanel);
 
         var addRuleButton = new Button { Content = "Добавить правило" };
         addRuleButton.Click += (_, _) =>
         {
-            var time = timePicker.SelectedTime ?? new TimeSpan(8, 0, 0);
+            var time = new TimeSpan(hour, minute, 0);
             var scopeKeys = allMonitorsCheckBox.IsChecked == true
                 ? new List<string>()
                 : monitorCheckBoxes.Where(t => t.CheckBox.IsChecked == true).Select(t => BrightnessController.GetMonitorKey(t.Monitor)).ToList();
@@ -510,7 +653,9 @@ public partial class SettingsWindow : Window
             RefreshRulesList();
             RefreshActiveNow();
         };
-        root.Children.Add(addRuleButton);
+        newRulePanel.Children.Add(addRuleButton);
+
+        root.Children.Add(newRuleCard);
     }
 
     private void BuildAppProfilesTab(StackPanel root)
@@ -897,15 +1042,9 @@ public partial class SettingsWindow : Window
         var idleStore = new JsonFileIdleSettingsStore();
         var idleSettings = idleStore.Load();
 
-        root.Children.Add(new TextBlock
-        {
-            Text = "Приглушает яркость ВСЕХ мониторов разом после N минут без клавиатуры/мыши " +
-                   "и восстанавливает при возврате активности (актуальное значение расписания или " +
-                   "профиля приложения, если применимо — не устаревший снимок).",
-            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
-        });
-
         var enabledCheckBox = new CheckBox { Content = "Включить приглушение по бездействию", IsChecked = idleSettings.IsEnabled };
+        ToolTip.SetTip(enabledCheckBox, "Приглушает яркость ВСЕХ мониторов разом после N минут без клавиатуры/мыши " +
+            "и восстанавливает при возврате активности (актуальное значение расписания или профиля приложения, если применимо — не устаревший снимок).");
         root.Children.Add(enabledCheckBox);
 
         root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
@@ -923,17 +1062,13 @@ public partial class SettingsWindow : Window
         root.Children.Add(dimPercentRow);
 
         var pollIntervalRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        pollIntervalRow.Children.Add(new TextBlock { Text = "Проверка простоя, сек:", VerticalAlignment = VerticalAlignment.Center, Width = 180 });
+        var pollIntervalLabel = new TextBlock { Text = "Проверка простоя, сек:", VerticalAlignment = VerticalAlignment.Center, Width = 180 };
+        ToolTip.SetTip(pollIntervalLabel, "Как часто проверяется, не пошевелили ли вы мышью/клавиатурой. Меньше — " +
+            "отзывчивее восстановление после простоя, но чуть чаще фоновая проверка.");
+        pollIntervalRow.Children.Add(pollIntervalLabel);
         var pollIntervalInput = new NumericUpDown { Minimum = 1, Maximum = 60, Value = idleSettings.PollIntervalSeconds, Width = 150, FormatString = "0" };
         pollIntervalRow.Children.Add(pollIntervalInput);
         root.Children.Add(pollIntervalRow);
-        root.Children.Add(new TextBlock
-        {
-            Text = "Как часто проверяется, не пошевелили ли вы мышью/клавиатурой. Меньше — " +
-                   "отзывчивее восстановление после простоя, но чуть чаще фоновая проверка.",
-            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
-            FontSize = 11,
-        });
 
         enabledCheckBox.IsCheckedChanged += (_, _) =>
         {
@@ -1010,29 +1145,6 @@ public partial class SettingsWindow : Window
         return comboBox;
     }
 
-    private int ComputeAveragePercent()
-    {
-        var monitors = _controller.Monitors;
-        if (monitors.Count == 0)
-        {
-            return 50;
-        }
-
-        var sum = 0;
-        var count = 0;
-        foreach (var monitor in monitors)
-        {
-            var level = _controller.GetBrightness(monitor);
-            if (level is not null)
-            {
-                sum += level.Percent;
-                count++;
-            }
-        }
-
-        return count > 0 ? sum / count : 50;
-    }
-
     // Слайдер "прилипает" к настраиваемому шагу (см. "Шаг слайдеров" выше), а
     // кнопки ± дают точную подстройку на 1% в обход прилипания — например, до 29
     // удобнее дойти кнопкой от 30, чем медленно тащить слайдер между тиками.
@@ -1044,9 +1156,20 @@ public partial class SettingsWindow : Window
     // применяется один раз — по отпусканию кнопки мыши, по клику ±, или когда
     // слайдер двигает не пользователь напрямую (например, синхронизация от
     // общего слайдера "Все сразу").
-    private static Slider AddSliderRow(StackPanel root, string label, int initialPercent, int tickStep, Action<int> onChanged)
+    // Internal — переиспользуется GlobalSliderPopup (FP9 Фаза 2), не только этим окном.
+    // nameColumnWidth — под длинные названия мониторов в узком поповере название
+    // едет "бегущей строкой", а не обрезается; в широком окне настроек места и так
+    // хватает, поэтому запас пошире и анимация практически никогда не включается.
+    internal static Slider AddSliderRow(StackPanel root, string label, int initialPercent, int tickStep, Action<int> onChanged, double nameColumnWidth = 360)
     {
-        var header = new TextBlock { Text = $"{label}: {initialPercent}%" };
+        var headerRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        var nameLabel = BuildMarqueeLabel(label, nameColumnWidth);
+        var percentLabel = new TextBlock { Text = $"{initialPercent}%", HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumn(nameLabel, 0);
+        Grid.SetColumn(percentLabel, 1);
+        headerRow.Children.Add(nameLabel);
+        headerRow.Children.Add(percentLabel);
+
         var slider = new Slider
         {
             Minimum = 0,
@@ -1056,7 +1179,128 @@ public partial class SettingsWindow : Window
             IsSnapToTickEnabled = true,
         };
 
+        // Всплывающий пузырёк с процентом прямо над кружком слайдера — статичная
+        // подпись "название: процент" не влезает в узкий поповер (см. percentLabel
+        // выше — по той же причине она вынесена отдельно), а пузырёк даёт точную
+        // обратную связь именно там, где палец/курсор тянет слайдер.
+        //
+        // Ширина/высота ФИКСИРОВАНЫ (не подстраиваются под текст) — раньше центр
+        // считался через bubble.Bounds.Width, а она меняется в зависимости от
+        // количества цифр (9% против 100%), из-за чего пузырёк ощутимо "шатался"
+        // при перетаскивании. С фиксированным размером делитель в формуле центрирования
+        // всегда один и тот же — дрожи по X больше нет.
+        const double bubbleWidth = 34;
+        const double bubbleBodyHeight = 20;
+        const double bubbleTailSize = 10;
+        const double bubbleGap = 3;
+        const double bubbleTotalHeight = bubbleBodyHeight + bubbleTailSize / 2;
+
+        var bubbleText = new TextBlock
+        {
+            Text = $"{initialPercent}%",
+            Foreground = Avalonia.Media.Brushes.White,
+            FontSize = 11,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var bubbleBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0xE8, 0x30, 0x30, 0x30));
+        var bubbleBody = new Border
+        {
+            Width = bubbleWidth,
+            Height = bubbleBodyHeight,
+            CornerRadius = new CornerRadius(5),
+            Background = bubbleBrush,
+            Child = bubbleText,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+        };
+        // Повёрнутый на 45° квадрат: верхняя половина спрятана ПОД телом пузырька
+        // (добавлен в Panel раньше него, значит рисуется ниже по z-order), снизу
+        // торчит только острый кончик — классический приём для "хвостика" подсказки,
+        // конец которого всегда точно над кружком слайдера.
+        var bubbleTail = new Border
+        {
+            Width = bubbleTailSize,
+            Height = bubbleTailSize,
+            Background = bubbleBrush,
+            RenderTransform = new Avalonia.Media.RotateTransform(45),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness((bubbleWidth - bubbleTailSize) / 2, bubbleBodyHeight - bubbleTailSize / 2, 0, 0),
+        };
+        var bubble = new Panel
+        {
+            Width = bubbleWidth,
+            Height = bubbleTotalHeight,
+            IsVisible = false,
+            IsHitTestVisible = false,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+        };
+        bubble.Children.Add(bubbleTail);
+        bubble.Children.Add(bubbleBody);
+
+        // Panel (не StackPanel) — чтобы пузырёк мог рисоваться поверх и НАД строкой
+        // слайдера, не будучи прижатым к её собственным границам. Объявлен здесь
+        // (заполнится ниже), чтобы TranslatePoint пересчитывал позицию пузырька
+        // именно в его системе координат, а не в системе координат Grid со слайдером.
+        var sliderHost = new Panel();
+
+        Thumb? thumb = null;
+
+        void RepositionBubble()
+        {
+            thumb ??= slider.GetVisualDescendants().OfType<Thumb>().FirstOrDefault();
+            if (thumb is null)
+            {
+                return;
+            }
+
+            // Y=0 в системе координат самого thumb — это его верхний край; переводим
+            // именно эту точку, чтобы хвостик всегда указывал строго на верх кружка,
+            // а не на его центр (тогда кончик "прятался" бы внутри кружка).
+            var top = thumb.TranslatePoint(new Point(thumb.Bounds.Width / 2, 0), sliderHost);
+            if (top is not { } point)
+            {
+                return;
+            }
+
+            bubble.Margin = new Thickness(point.X - bubbleWidth / 2, point.Y - bubbleGap - bubbleTotalHeight, 0, 0);
+        }
+
         var isDragging = false;
+
+        // Раньше пузырёк переставлялся сразу внутри обработчика PropertyChanged —
+        // но на этот момент Avalonia ещё не успела ЗАНОВО РАСПОЛОЖИТЬ сам кружок
+        // (Value уже новое, а Arrange кружка происходит на СЛЕДУЮЩЕМ проходе
+        // layout) — из-за этого пузырёк читал СТАРУЮ позицию кружка, на шаг позади
+        // реальной, и при быстром перетаскивании туда-сюда это выглядело как
+        // дрожь/шатание. LayoutUpdated срабатывает уже ПОСЛЕ фактического Arrange —
+        // подписка живёт, только пока пузырёк реально виден.
+        void OnSliderLayoutUpdated(object? sender, EventArgs e) => RepositionBubble();
+
+        void UpdateBubbleVisibility()
+        {
+            var shouldShow = isDragging || slider.IsPointerOver;
+            if (shouldShow == bubble.IsVisible)
+            {
+                return;
+            }
+
+            bubble.IsVisible = shouldShow;
+            if (shouldShow)
+            {
+                slider.LayoutUpdated += OnSliderLayoutUpdated;
+                RepositionBubble();
+            }
+            else
+            {
+                slider.LayoutUpdated -= OnSliderLayoutUpdated;
+            }
+        }
+
+        slider.PointerEntered += (_, _) => UpdateBubbleVisibility();
+        slider.PointerExited += (_, _) => UpdateBubbleVisibility();
 
         slider.PropertyChanged += (_, e) =>
         {
@@ -1066,18 +1310,25 @@ public partial class SettingsWindow : Window
             }
 
             var percent = (int)slider.Value;
-            header.Text = $"{label}: {percent}%";
+            percentLabel.Text = $"{percent}%";
+            bubbleText.Text = $"{percent}%";
+
             if (!isDragging)
             {
                 onChanged(percent);
             }
         };
 
-        slider.AddHandler(InputElement.PointerPressedEvent, (_, _) => isDragging = true, handledEventsToo: true);
+        slider.AddHandler(InputElement.PointerPressedEvent, (_, _) =>
+        {
+            isDragging = true;
+            UpdateBubbleVisibility();
+        }, handledEventsToo: true);
         slider.AddHandler(InputElement.PointerReleasedEvent, (_, _) =>
         {
             isDragging = false;
             onChanged((int)slider.Value);
+            UpdateBubbleVisibility();
         }, handledEventsToo: true);
 
         var minusButton = new Button { Content = "−", Width = 32 };
@@ -1096,8 +1347,167 @@ public partial class SettingsWindow : Window
         row.Children.Add(slider);
         row.Children.Add(plusButton);
 
-        root.Children.Add(header);
-        root.Children.Add(row);
+        sliderHost.Children.Add(row);
+        sliderHost.Children.Add(bubble);
+
+        root.Children.Add(headerRow);
+        root.Children.Add(sliderHost);
         return slider;
+    }
+
+    // Название монитора едет туда-обратно бегущей строкой от начала до самого конца,
+    // только если реально не помещается в отведённую ширину — короткие названия
+    // остаются статичными без анимации.
+    //
+    // Ширина текста меряется через FormattedText (полностью отдельная, "бумажная"
+    // операция) — НЕ через textBlock.Measure(...): вызов Measure() напрямую на
+    // TextBlock, который уже присоединён к живому дереву и участвует в обычном
+    // цикле layout, сбивает его с толку и портит реальную раскладку (ровно это и
+    // сломало строку "Все мониторы" — текст начал переноситься/резаться). Сам
+    // шрифт/размер для FormattedText читаются ЛЕНИВО на первом тике таймера (а не
+    // сразу при создании) — до присоединения к дереву стиль темы ещё не применён,
+    // и раннее чтение FontFamily/FontSize даёт метрики "по умолчанию", не совпадающие
+    // с реально отрисованными (отсюда была неверная амплитуда прокрутки).
+    // Два часа/минуты в форме расписания (FP9 Фаза 5) вводятся прокруткой колеса, а
+    // не NumericUpDown — тот на практике оказался слишком узким, число почти не было
+    // видно рядом со стрелочками. Цифры "десятки"/"единицы" — отдельные, независимо
+    // наводимые TextBlock: прокрутка над ЛЮБОЙ из них по умолчанию меняет ВСЁ число
+    // на ±1 (так проще и предсказуемее — не нужно целиться в конкретную цифру), а с
+    // зажатым Shift — именно ту цифру, над которой курсор (десятки → ±10, единицы → ±1).
+    private static Control BuildScrollableTwoDigit(Func<int> getValue, Action<int> setValue, int min, int max)
+    {
+        // Ширина/выравнивание ФИКСИРОВАНЫ — без этого узкие цифры ("1") и широкие
+        // ("8") занимали разную ширину, весь блок "сдвигался" при каждом изменении
+        // значения, курсор оставался на месте, а цифра "уезжала" из-под него — из-за
+        // этого следующий скролл иногда попадал уже на ScrollViewer всего окна.
+        const double digitWidth = 16;
+        var tensDigit = new TextBlock
+        {
+            FontSize = 18,
+            FontWeight = Avalonia.Media.FontWeight.Bold,
+            Width = digitWidth,
+            TextAlignment = Avalonia.Media.TextAlignment.Center,
+        };
+        var onesDigit = new TextBlock
+        {
+            FontSize = 18,
+            FontWeight = Avalonia.Media.FontWeight.Bold,
+            Width = digitWidth,
+            TextAlignment = Avalonia.Media.TextAlignment.Center,
+        };
+        var cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.SizeNorthSouth);
+        tensDigit.Cursor = cursor;
+        onesDigit.Cursor = cursor;
+
+        void Refresh()
+        {
+            var text = getValue().ToString("00");
+            tensDigit.Text = text[..1];
+            onesDigit.Text = text[1..];
+        }
+
+        Refresh();
+
+        void HandleWheel(int placeValue, PointerWheelEventArgs e)
+        {
+            // Помечаем обработанным сразу, а не только при реальном изменении —
+            // иначе "пустой" (нулевой) скролл-евент может провалиться дальше и
+            // прокрутить ScrollViewer всего окна настроек.
+            e.Handled = true;
+
+            var notches = Math.Sign(e.Delta.Y);
+            if (notches == 0)
+            {
+                return;
+            }
+
+            var step = e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? placeValue : 1;
+            setValue(Math.Clamp(getValue() + notches * step, min, max));
+            Refresh();
+        }
+
+        tensDigit.PointerWheelChanged += (_, e) => HandleWheel(10, e);
+        onesDigit.PointerWheelChanged += (_, e) => HandleWheel(1, e);
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 0 };
+        row.Children.Add(tensDigit);
+        row.Children.Add(onesDigit);
+
+        ToolTip.SetTip(row, "Прокрутите колесо мыши: ±1 к числу. С зажатым Shift — точнее: над первой цифрой ±10, над второй ±1.");
+
+        return row;
+    }
+
+    private static Control BuildMarqueeLabel(string text, double width)
+    {
+        var textBlock = new TextBlock
+        {
+            Text = text,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextWrapping = Avalonia.Media.TextWrapping.NoWrap,
+        };
+        var clip = new Border { ClipToBounds = true, Width = width, Child = textBlock };
+
+        var transform = new Avalonia.Media.TranslateTransform();
+        textBlock.RenderTransform = transform;
+
+        double? overflow = null;
+        var forward = true;
+        var pauseTicksRemaining = 0;
+        const double pixelsPerTick = 1.2;
+        const int pauseTicksAtEnds = 25; // ~750мс на паузу, чтобы конец/начало успевали прочитаться
+
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(30) };
+        timer.Tick += (_, _) =>
+        {
+            if (overflow is null)
+            {
+                var typeface = new Avalonia.Media.Typeface(textBlock.FontFamily, textBlock.FontStyle, textBlock.FontWeight);
+                var formatted = new Avalonia.Media.FormattedText(
+                    text,
+                    System.Globalization.CultureInfo.CurrentCulture,
+                    Avalonia.Media.FlowDirection.LeftToRight,
+                    typeface,
+                    textBlock.FontSize,
+                    null);
+                var measured = formatted.Width - width;
+                if (measured <= 0)
+                {
+                    timer.Stop();
+                    return;
+                }
+
+                overflow = measured;
+            }
+
+            if (pauseTicksRemaining > 0)
+            {
+                pauseTicksRemaining--;
+                return;
+            }
+
+            var next = transform.X + (forward ? -pixelsPerTick : pixelsPerTick);
+            if (next <= -overflow)
+            {
+                next = -overflow.Value;
+                forward = false;
+                pauseTicksRemaining = pauseTicksAtEnds;
+            }
+            else if (next >= 0)
+            {
+                next = 0;
+                forward = true;
+                pauseTicksRemaining = pauseTicksAtEnds;
+            }
+
+            transform.X = next;
+        };
+        timer.Start();
+
+        // Иначе таймер продолжит тикать вечно в фоне после закрытия окна —
+        // строка больше не в дереве, значения меняются, но их никто не видит.
+        clip.DetachedFromVisualTree += (_, _) => timer.Stop();
+
+        return clip;
     }
 }

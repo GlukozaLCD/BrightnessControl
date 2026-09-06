@@ -1,0 +1,14 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="BrightnessControl.App.Views.GlobalSliderPopup"
+        Title="BrightnessControl"
+        Width="260"
+        SizeToContent="Height"
+        CanResize="False"
+        WindowDecorations="None"
+        ShowInTaskbar="False"
+        Topmost="True">
+    <Border BorderBrush="#40808080" BorderThickness="1">
+        <StackPanel x:Name="Root" Margin="14" Spacing="8" />
+    </Border>
+</Window>

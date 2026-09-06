@@ -72,6 +72,7 @@ public partial class App : Application
                 "BrightnessControl");
             _trayService.ScrollNotches += OnScrollNotches;
             _trayService.RightClicked += e => Dispatcher.UIThread.Post(() => OpenSettingsWindow(e.CursorX, e.CursorY, desktop));
+            _trayService.LeftClicked += e => Dispatcher.UIThread.Post(() => OpenGlobalSliderPopup(e.CursorX, e.CursorY));
         }
 
         base.OnFrameworkInitializationCompleted();
@@ -149,6 +150,25 @@ public partial class App : Application
         }
 
         _settingsWindow.Activate();
+    }
+
+    // Левый клик по иконке трея — лёгкий поповер только с яркостью (FP9 Фаза 2).
+    // Правый клик по-прежнему открывает полное окно настроек (OpenSettingsWindow).
+    private void OpenGlobalSliderPopup(int cursorX, int cursorY)
+    {
+        if (_brightnessController is null || _globalApplier is null)
+        {
+            return;
+        }
+
+        if (!(_trayService?.TryGetIconRect(out var iconRect) ?? false))
+        {
+            // Иконку не нашли (редкий случай) — прицепляемся к точке клика вместо неё.
+            iconRect = new MonitorBounds(cursorX, cursorY, 0, 0);
+        }
+
+        var popup = new GlobalSliderPopup(_brightnessController, _globalApplier, _appSettings?.SliderStepPercent ?? 5);
+        popup.ShowNearIcon(iconRect);
     }
 
     private void OnScrollNotches(TrayScrollEventArgs e)

@@ -2,7 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="BrightnessControl.App.Views.SettingsWindow"
         Title="BrightnessControl — Настройки"
-        Width="520" Height="560"
+        Width="640" Height="560"
         CanResize="False"
         WindowDecorations="None"
         ShowInTaskbar="False"
@@ -19,45 +19,27 @@
                                VerticalAlignment="Center" />
                 </Border>
             </Grid>
-            <TabControl>
-                <TabControl.Styles>
-                    <Style Selector="TabItem">
-                        <Setter Property="FontSize" Value="12" />
-                        <Setter Property="Padding" Value="10,4" />
-                        <Setter Property="MinHeight" Value="28" />
-                    </Style>
-                </TabControl.Styles>
-                <TabItem Header="Мониторы">
-                    <ScrollViewer>
-                        <StackPanel x:Name="MonitorsPanel" Margin="16" Spacing="8" />
-                    </ScrollViewer>
-                </TabItem>
-                <TabItem Header="Трей">
-                    <ScrollViewer>
-                        <StackPanel x:Name="TrayPanel" Margin="16" Spacing="8" />
-                    </ScrollViewer>
-                </TabItem>
-                <TabItem Header="Оформление">
-                    <ScrollViewer>
-                        <StackPanel x:Name="AppearancePanel" Margin="16" Spacing="8" />
-                    </ScrollViewer>
-                </TabItem>
-                <TabItem Header="Расписание">
-                    <ScrollViewer>
-                        <StackPanel x:Name="SchedulePanel" Margin="16" Spacing="8" />
-                    </ScrollViewer>
-                </TabItem>
-                <TabItem Header="Профили приложений">
-                    <ScrollViewer>
-                        <StackPanel x:Name="AppProfilesPanel" Margin="16" Spacing="8" />
-                    </ScrollViewer>
-                </TabItem>
-                <TabItem Header="Простой">
-                    <ScrollViewer>
-                        <StackPanel x:Name="IdlePanel" Margin="16" Spacing="8" />
-                    </ScrollViewer>
-                </TabItem>
-            </TabControl>
+            <Grid x:Name="NavContentGrid" ColumnDefinitions="*,Auto">
+                <ScrollViewer Grid.Column="0">
+                    <StackPanel x:Name="ContentPanel" Margin="16" Spacing="8" />
+                </ScrollViewer>
+                <Border x:Name="NavBorder"
+                        Grid.Column="1"
+                        Width="170"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Top"
+                        BorderBrush="Black"
+                        BorderThickness="1">
+                    <DockPanel>
+                        <Button x:Name="NavFlipButton"
+                                DockPanel.Dock="Top"
+                                Content="←"
+                                HorizontalAlignment="Stretch"
+                                HorizontalContentAlignment="Center" />
+                        <StackPanel x:Name="NavList" Margin="6" Spacing="4" />
+                    </DockPanel>
+                </Border>
+            </Grid>
         </DockPanel>
     </Border>
 </Window>
