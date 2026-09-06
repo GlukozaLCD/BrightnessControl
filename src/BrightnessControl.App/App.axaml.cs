@@ -22,6 +22,7 @@ public partial class App : Application
     private CoalescingBrightnessApplier? _globalApplier;
     private ScheduleEngine? _scheduleEngine;
     private AppProfileEngine? _appProfileEngine;
+    private IdleEngine? _idleEngine;
     private int _globalPercent = 50;
     private int? _stickyClungValue;
 
@@ -53,10 +54,18 @@ public partial class App : Application
             // Профиль приложения приоритетнее расписания: пока на мониторе активен
             // подходящий-под-профиль процесс, расписание этот монитор не трогает
             // (см. AppProfileEngine.ActiveMonitorAdapterDeviceName и FP5 Фазу 3).
+            // Приглушение по бездействию (FP6) — глобальное и приоритетнее всех: пока
+            // оно активно, расписание игнорирует ВСЕ мониторы (см. IdleEngine.IsDimmed).
             _appProfileEngine = new AppProfileEngine(_brightnessController);
+            _idleEngine = new IdleEngine(
+                _brightnessController,
+                resolveActiveProfilePercent: monitor => _appProfileEngine?.ActiveMonitorAdapterDeviceName == monitor.AdapterDeviceName
+                    ? _appProfileEngine.ActiveProfilePercent
+                    : null);
             _scheduleEngine = new ScheduleEngine(
                 _brightnessController,
-                isMonitorSuppressed: monitor => _appProfileEngine?.ActiveMonitorAdapterDeviceName == monitor.AdapterDeviceName);
+                isMonitorSuppressed: monitor => _idleEngine?.IsDimmed == true
+                    || _appProfileEngine?.ActiveMonitorAdapterDeviceName == monitor.AdapterDeviceName);
 
             _trayService = new TrayService(
                 new Uri("avares://BrightnessControl.App/Assets/avalonia-logo.ico"),
@@ -125,6 +134,7 @@ public partial class App : Application
                 _traySettings ?? new TraySettings(),
                 _traySettingsStore ?? new TraySettingsStore(),
                 _appProfileEngine,
+                _idleEngine,
                 () => desktop.Shutdown());
             _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         }

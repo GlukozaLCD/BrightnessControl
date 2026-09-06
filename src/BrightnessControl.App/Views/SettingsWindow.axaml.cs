@@ -20,6 +20,7 @@ public partial class SettingsWindow : Window
     private readonly TraySettings _traySettings;
     private readonly TraySettingsStore _traySettingsStore;
     private readonly AppProfileEngine? _appProfileEngine;
+    private readonly IdleEngine? _idleEngine;
     private readonly Action _onExitRequested;
     private readonly Dictionary<string, CoalescingBrightnessApplier> _perMonitorAppliers = new();
     private readonly List<Slider> _monitorSliders = new();
@@ -34,6 +35,7 @@ public partial class SettingsWindow : Window
         _traySettings = null!;
         _traySettingsStore = null!;
         _appProfileEngine = null;
+        _idleEngine = null;
         _onExitRequested = () => { };
         InitializeComponent();
     }
@@ -45,6 +47,7 @@ public partial class SettingsWindow : Window
         TraySettings traySettings,
         TraySettingsStore traySettingsStore,
         AppProfileEngine? appProfileEngine,
+        IdleEngine? idleEngine,
         Action onExitRequested)
     {
         _controller = controller;
@@ -53,6 +56,7 @@ public partial class SettingsWindow : Window
         _traySettings = traySettings;
         _traySettingsStore = traySettingsStore;
         _appProfileEngine = appProfileEngine;
+        _idleEngine = idleEngine;
         _onExitRequested = onExitRequested;
         InitializeComponent();
         BuildContent();
@@ -170,6 +174,7 @@ public partial class SettingsWindow : Window
         BuildAppearanceTab(this.FindControl<StackPanel>("AppearancePanel")!);
         BuildScheduleTab(this.FindControl<StackPanel>("SchedulePanel")!);
         BuildAppProfilesTab(this.FindControl<StackPanel>("AppProfilesPanel")!);
+        BuildIdleTab(this.FindControl<StackPanel>("IdlePanel")!);
     }
 
     private void BuildMonitorsTab(StackPanel root)
@@ -885,6 +890,91 @@ public partial class SettingsWindow : Window
             RefreshProfilesList();
         };
         root.Children.Add(addProfileButton);
+    }
+
+    private void BuildIdleTab(StackPanel root)
+    {
+        var idleStore = new JsonFileIdleSettingsStore();
+        var idleSettings = idleStore.Load();
+
+        root.Children.Add(new TextBlock
+        {
+            Text = "Приглушает яркость ВСЕХ мониторов разом после N минут без клавиатуры/мыши " +
+                   "и восстанавливает при возврате активности (актуальное значение расписания или " +
+                   "профиля приложения, если применимо — не устаревший снимок).",
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+        });
+
+        var enabledCheckBox = new CheckBox { Content = "Включить приглушение по бездействию", IsChecked = idleSettings.IsEnabled };
+        root.Children.Add(enabledCheckBox);
+
+        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
+
+        var timeoutRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        timeoutRow.Children.Add(new TextBlock { Text = "Таймаут простоя, мин:", VerticalAlignment = VerticalAlignment.Center, Width = 180 });
+        var timeoutInput = new NumericUpDown { Minimum = 1, Maximum = 180, Value = idleSettings.IdleTimeoutMinutes, Width = 150, FormatString = "0" };
+        timeoutRow.Children.Add(timeoutInput);
+        root.Children.Add(timeoutRow);
+
+        var dimPercentRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        dimPercentRow.Children.Add(new TextBlock { Text = "Яркость при простое, %:", VerticalAlignment = VerticalAlignment.Center, Width = 180 });
+        var dimPercentInput = new NumericUpDown { Minimum = 0, Maximum = 100, Value = idleSettings.DimPercent, Width = 150, FormatString = "0" };
+        dimPercentRow.Children.Add(dimPercentInput);
+        root.Children.Add(dimPercentRow);
+
+        var pollIntervalRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        pollIntervalRow.Children.Add(new TextBlock { Text = "Проверка простоя, сек:", VerticalAlignment = VerticalAlignment.Center, Width = 180 });
+        var pollIntervalInput = new NumericUpDown { Minimum = 1, Maximum = 60, Value = idleSettings.PollIntervalSeconds, Width = 150, FormatString = "0" };
+        pollIntervalRow.Children.Add(pollIntervalInput);
+        root.Children.Add(pollIntervalRow);
+        root.Children.Add(new TextBlock
+        {
+            Text = "Как часто проверяется, не пошевелили ли вы мышью/клавиатурой. Меньше — " +
+                   "отзывчивее восстановление после простоя, но чуть чаще фоновая проверка.",
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+            FontSize = 11,
+        });
+
+        enabledCheckBox.IsCheckedChanged += (_, _) =>
+        {
+            idleSettings.IsEnabled = enabledCheckBox.IsChecked ?? true;
+            idleStore.Save(idleSettings);
+        };
+        timeoutInput.ValueChanged += (_, _) =>
+        {
+            idleSettings.IdleTimeoutMinutes = (int)(timeoutInput.Value ?? 5);
+            idleStore.Save(idleSettings);
+        };
+        dimPercentInput.ValueChanged += (_, _) =>
+        {
+            idleSettings.DimPercent = (int)(dimPercentInput.Value ?? 10);
+            idleStore.Save(idleSettings);
+        };
+        pollIntervalInput.ValueChanged += (_, _) =>
+        {
+            idleSettings.PollIntervalSeconds = (int)(pollIntervalInput.Value ?? 1);
+            idleStore.Save(idleSettings);
+            // Иначе новый интервал подхватится только на следующем перезапуске
+            // приложения — таймер уже создан со старым значением.
+            _idleEngine?.Start();
+        };
+
+        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
+        root.Children.Add(new TextBlock { Text = "Сейчас", FontWeight = Avalonia.Media.FontWeight.Bold });
+        var statusText = new TextBlock();
+        root.Children.Add(statusText);
+
+        void RefreshStatus()
+        {
+            statusText.Text = _idleEngine?.IsDimmed == true
+                ? "Приглушено по бездействию"
+                : "Активно (не приглушено)";
+        }
+
+        RefreshStatus();
+        var statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        statusTimer.Tick += (_, _) => RefreshStatus();
+        statusTimer.Start();
     }
 
     private ComboBox BuildThemeSelector()

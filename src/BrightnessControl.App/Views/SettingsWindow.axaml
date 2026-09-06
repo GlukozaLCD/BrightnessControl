@@ -52,6 +52,11 @@
                         <StackPanel x:Name="AppProfilesPanel" Margin="16" Spacing="8" />
                     </ScrollViewer>
                 </TabItem>
+                <TabItem Header="Простой">
+                    <ScrollViewer>
+                        <StackPanel x:Name="IdlePanel" Margin="16" Spacing="8" />
+                    </ScrollViewer>
+                </TabItem>
             </TabControl>
         </DockPanel>
     </Border>

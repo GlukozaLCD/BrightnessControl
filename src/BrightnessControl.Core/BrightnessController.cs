@@ -118,6 +118,20 @@ public sealed class BrightnessController : IDisposable
         Task.WaitAll(tasks);
     }
 
+    // Как SetAllBrightness, но с разным процентом на монитор за один параллельный
+    // проход — нужен IdleEngine (FP6): при восстановлении после простоя у каждого
+    // монитора может быть свой целевой процент (профиль/расписание/снимок), и
+    // последовательная запись по одному ощутимо "тормозит" по сравнению с
+    // одновременным приглушением через SetAllBrightness.
+    public void SetEachBrightness(IReadOnlyDictionary<MonitorInfo, int> percentByMonitor)
+    {
+        var tasks = percentByMonitor
+            .Select(pair => Task.Run(() => SetBrightness(pair.Key, pair.Value)))
+            .ToArray();
+
+        Task.WaitAll(tasks);
+    }
+
     public int? GetLastKnownPercent(MonitorInfo monitor) => _store.GetLastPercent(GetMonitorKey(monitor));
 
     // Публично — нужен и другим потребителям Core (например, ScheduleEngine),

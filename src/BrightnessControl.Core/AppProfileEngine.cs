@@ -15,15 +15,17 @@ public sealed class AppProfileEngine : IDisposable
 
     private string? _activeProfileId;
     private string? _activeMonitorAdapterName;
+    private int? _activeProfilePercent;
     private int? _snapshotPercent;
     private bool _disposed;
 
     // Для живой индикации "сейчас активно" в GUI (см. FP5 Фаза 2), а также чтобы
-    // ScheduleEngine (FP4) мог узнать, какой монитор сейчас занят профилем, и не
-    // перебивать его своими правилами — профиль приоритетнее расписания (решено
-    // при планировании Фазы 3).
+    // ScheduleEngine (FP4) и IdleEngine (FP6) могли узнать, какой монитор сейчас
+    // занят профилем (и на какой процент), и не перебивать его своими правилами —
+    // профиль приоритетнее расписания и восстановления после простоя.
     public string? ActiveProfileId => _activeProfileId;
     public string? ActiveMonitorAdapterDeviceName => _activeMonitorAdapterName;
+    public int? ActiveProfilePercent => _activeProfilePercent;
 
     public AppProfileEngine(
         BrightnessController controller,
@@ -68,12 +70,14 @@ public sealed class AppProfileEngine : IDisposable
                 _controller.SetBrightness(monitor, matched.Percent);
                 _activeProfileId = matched.Id;
                 _activeMonitorAdapterName = info.MonitorAdapterDeviceName;
+                _activeProfilePercent = matched.Percent;
                 return;
             }
         }
 
         _activeProfileId = null;
         _activeMonitorAdapterName = null;
+        _activeProfilePercent = null;
     }
 
     private void RestorePrevious()
