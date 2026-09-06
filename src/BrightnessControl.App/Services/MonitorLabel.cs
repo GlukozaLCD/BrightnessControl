@@ -13,8 +13,19 @@ public static class MonitorLabel
     // трея, бегущая строка). У мониторов с реальным именем оно по-прежнему видно.
     private const string GenericFriendlyName = "Generic PnP Monitor";
 
-    public static string Format(MonitorInfo monitor)
+    // nameOverrides — из MonitorNameStore: пользовательское имя (переименование в
+    // настройках) побеждает всё остальное, если задано и не пустое. Параметр
+    // необязательный, чтобы места, которым переименование не важно, не были
+    // обязаны прокидывать словарь.
+    public static string Format(MonitorInfo monitor, IReadOnlyDictionary<string, string>? nameOverrides = null)
     {
+        if (nameOverrides is not null
+            && nameOverrides.TryGetValue(BrightnessController.GetMonitorKey(monitor), out var custom)
+            && !string.IsNullOrEmpty(custom))
+        {
+            return custom;
+        }
+
         var adapterShortName = monitor.AdapterDeviceName.TrimStart('\\', '.');
         return string.Equals(monitor.FriendlyName, GenericFriendlyName, StringComparison.OrdinalIgnoreCase)
             ? adapterShortName

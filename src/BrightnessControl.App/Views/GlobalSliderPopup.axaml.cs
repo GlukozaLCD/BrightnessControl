@@ -167,18 +167,16 @@ public partial class GlobalSliderPopup : Window
 
     public void ShowNearIcon(MonitorBounds iconRect)
     {
-        // Правый нижний угол окна должен оказаться чуть выше и левее иконки —
-        // как системные поповеры громкости/сети в Windows. Ширина/высота читаются
-        // ПОСЛЕ Show() (как в SettingsWindow.ShowCenteredOn) — до показа окна они
-        // ещё не обязательно отражают реально измеренный SizeToContent-размер.
-        var anchor = new PixelPoint(iconRect.X + iconRect.Width, iconRect.Y - 8);
-
+        // Ширина/высота читаются ПОСЛЕ Show() — до показа окна они ещё не
+        // обязательно отражают реально измеренный SizeToContent-размер.
+        // Сторона/панель — общая логика, см. TrayPopupPlacement (её же
+        // использует SettingsWindow и BrightnessHudWindow).
         if (!IsVisible)
         {
             Show();
         }
 
-        Position = new PixelPoint(anchor.X - (int)Width, anchor.Y - (int)Height);
+        Position = TrayPopupPlacement.Compute(Screens, iconRect.X, iconRect.Y, iconRect.Width, iconRect.Height, (int)Width, (int)Height);
         Activate();
     }
 }

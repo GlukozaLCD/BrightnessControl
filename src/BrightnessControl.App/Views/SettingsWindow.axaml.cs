@@ -23,6 +23,7 @@ public partial class SettingsWindow : Window
     private readonly AppProfileEngine? _appProfileEngine;
     private readonly IdleEngine? _idleEngine;
     private readonly AccentColorService? _accentColorService;
+    private readonly TrayService? _trayService;
     private readonly Action _onExitRequested;
 
     // Двухуровневая навигация (FP9 Фаза 3): _selectedCategory == null — показан
@@ -47,6 +48,7 @@ public partial class SettingsWindow : Window
         _appProfileEngine = null;
         _idleEngine = null;
         _accentColorService = null;
+        _trayService = null;
         _onExitRequested = () => { };
         InitializeComponent();
     }
@@ -60,6 +62,7 @@ public partial class SettingsWindow : Window
         AppProfileEngine? appProfileEngine,
         IdleEngine? idleEngine,
         AccentColorService? accentColorService,
+        TrayService? trayService,
         Action onExitRequested)
     {
         _controller = controller;
@@ -70,6 +73,7 @@ public partial class SettingsWindow : Window
         _appProfileEngine = appProfileEngine;
         _idleEngine = idleEngine;
         _accentColorService = accentColorService;
+        _trayService = trayService;
         _onExitRequested = onExitRequested;
         InitializeComponent();
         BuildContent();
@@ -77,8 +81,20 @@ public partial class SettingsWindow : Window
 
         // Ведёт себя как всплывающее меню трея: закрывается, стоит только кликнуть
         // мимо — а не как обычное окно настроек, которое остаётся открытым.
-        Deactivated += (_, _) => Close();
+        // _suppressDeactivateClose снимает это на время показа дочернего диалога
+        // (см. ColorPickerWindow) — иначе открытие диалога само по себе забирает
+        // фокус ОС у этого окна, оно считается "деактивированным" и тут же
+        // закрывается, из-за чего казалось, что всё приложение исчезает.
+        Deactivated += (_, _) =>
+        {
+            if (!_suppressDeactivateClose)
+            {
+                Close();
+            }
+        };
     }
+
+    private bool _suppressDeactivateClose;
 
     // Окно без рамки (WindowDecorations="None"), поэтому своего крестика у него нет —
     // рисуем свой: красный фон и белый крестик всегда, а при наведении крестик
@@ -185,16 +201,16 @@ public partial class SettingsWindow : Window
     // Прицеплено к иконке трея (как GlobalSliderPopup), а не по центру монитора
     // клика — FP9 Фаза 6: центрирование по монитору для окна настроек "всё ещё
     // не устраивало" пользователя после того, как левый клик забрал себе поповер.
+    // Сама сторона/сторона панели — общая логика, см. TrayPopupPlacement (её же
+    // использует GlobalSliderPopup и BrightnessHudWindow).
     public void ShowNearIcon(MonitorBounds iconRect)
     {
-        var anchor = new PixelPoint(iconRect.X + iconRect.Width, iconRect.Y - 8);
-
         if (!IsVisible)
         {
             Show();
         }
 
-        Position = new PixelPoint(anchor.X - (int)Width, anchor.Y - (int)Height);
+        Position = TrayPopupPlacement.Compute(Screens, iconRect.X, iconRect.Y, iconRect.Width, iconRect.Height, (int)Width, (int)Height);
     }
 
     private void BuildContent()
@@ -465,12 +481,463 @@ public partial class SettingsWindow : Window
         ToolTip.SetTip(accentCheckBox, "Подкрашивает выделение/акцентные элементы в цвет, который вы выбрали в Параметры Windows → Персонализация → Цвета, вместо стандартного синего.");
         accentCheckBox.IsCheckedChanged += (_, _) => _accentColorService?.SetEnabled(accentCheckBox.IsChecked ?? true);
         root.Children.Add(accentCheckBox);
+
+        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
+        root.Children.Add(new TextBlock { Text = "Иконка трея", FontWeight = Avalonia.Media.FontWeight.Bold });
+        root.Children.Add(BuildTrayIconSection());
+    }
+
+    // Форма, цвет и масштаб иконки трея — три независимых параметра (FP8):
+    // иконка рисуется на лету (TrayIconRenderer), а не грузится из готового
+    // файла, поэтому любую комбинацию можно применить сразу — без пересборки
+    // и без необходимости хранить файл на каждую комбинацию. Масштаб — свой
+    // на каждую форму (крутится колесом мыши над карточкой), не общий слайдер.
+    private Control BuildTrayIconSection()
+    {
+        var panel = new StackPanel { Spacing = 6 };
+        var mutedBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0xA0, 0x80, 0x80, 0x80));
+        var accentBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0xF2, 0x90, 0x0C));
+        var neutralBorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x40, 0x80, 0x80, 0x80));
+        var handCursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand);
+
+        // SettingsWindow фиксированного размера (Width=760, CanResize="False" в
+        // .axaml — увеличено с исходных 640 именно чтобы в галерею форм влезало
+        // 4 карточки в ряд, не только 3) — доступную ширину под галерею можно
+        // посчитать заранее по известным размерам разметки, не дожидаясь
+        // реального прохода layout (в момент построения контента окно ещё не
+        // показано, Bounds всех элементов ещё нулевые). Если разметка
+        // окна/навигации изменится, эти числа нужно будет поправить вручную:
+        // 760 (окно) − 2 (внешний Border BorderThickness=1×2) − 170 (NavBorder) −
+        // 32 (ContentPanel Margin=16×2) − 18 (запас на вертикальный скроллбар,
+        // если содержимое вкладки не помещается по высоте).
+        const int availableGalleryWidth = 760 - 2 - 170 - 32 - 18;
+        const int cardTotalWidth = 104 + 8; // сама карточка (см. ниже) + Margin(4) с каждой стороны
+        var maxDesignColumns = Math.Max(1, availableGalleryWidth / cardTotalWidth);
+        var designColumns = ComputeOptimalColumns(TrayIconCatalog.Designs.Count, maxDesignColumns);
+
+        var designGallery = new UniformGrid { Columns = designColumns };
+        panel.Children.Add(new TextBlock { Text = "Форма", FontSize = 12, Foreground = mutedBrush });
+        panel.Children.Add(designGallery);
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Прокрутите колесо мыши над формой, чтобы изменить её масштаб — у каждой формы он свой.",
+            FontSize = 10,
+            Foreground = mutedBrush,
+            FontStyle = Avalonia.Media.FontStyle.Italic,
+            Margin = new Thickness(0, 2, 0, 0),
+        });
+
+        var colorRow = new WrapPanel { Margin = new Thickness(0, 4, 0, 0) };
+        panel.Children.Add(new TextBlock { Text = "Цвет", FontSize = 12, Foreground = mutedBrush, Margin = new Thickness(0, 6, 0, 0) });
+        panel.Children.Add(colorRow);
+
+        string? renamingDesignId = null;
+        var isCommittingRename = false;
+
+        void ApplyLiveIcon()
+        {
+            if (!Enum.TryParse<TrayIconDesign>(_traySettings.TrayIconDesignId, out var design))
+            {
+                design = TrayIconDesign.Spokes;
+            }
+
+            var scale = _traySettings.GetTrayIconScale(_traySettings.TrayIconDesignId);
+            var color = System.Drawing.ColorTranslator.FromHtml(_traySettings.TrayIconColorHex);
+            var icon = TrayIconRenderer.Render(design, color, scale);
+            _trayService?.SetIcon(icon);
+            _traySettingsStore.Save(_traySettings);
+        }
+
+        // Формы, ещё не встречавшиеся в TrayIconDesignOrder (новые, добавленные уже
+        // после того как порядок сохранился), уходят в конец в порядке каталога —
+        // так список остаётся стабильным при добавлении новых форм и не требует
+        // отдельной миграции сохранённых настроек.
+        List<TrayIconDesignOption> GetOrderedDesigns()
+        {
+            var byId = TrayIconCatalog.Designs.ToDictionary(o => o.Design.ToString());
+            var ordered = new List<TrayIconDesignOption>();
+
+            foreach (var id in _traySettings.TrayIconDesignOrder)
+            {
+                if (byId.Remove(id, out var option))
+                {
+                    ordered.Add(option);
+                }
+            }
+
+            foreach (var option in TrayIconCatalog.Designs)
+            {
+                if (byId.ContainsKey(option.Design.ToString()))
+                {
+                    ordered.Add(option);
+                }
+            }
+
+            return ordered;
+        }
+
+        void MoveDesign(string designId, int direction)
+        {
+            var orderedIds = GetOrderedDesigns().Select(o => o.Design.ToString()).ToList();
+            var index = orderedIds.IndexOf(designId);
+            var newIndex = index + direction;
+            if (newIndex < 0 || newIndex >= orderedIds.Count)
+            {
+                return;
+            }
+
+            (orderedIds[index], orderedIds[newIndex]) = (orderedIds[newIndex], orderedIds[index]);
+            _traySettings.TrayIconDesignOrder = orderedIds;
+            _traySettingsStore.Save(_traySettings);
+            RefreshDesignGallery();
+        }
+
+        void RefreshDesignGallery()
+        {
+            designGallery.Children.Clear();
+            var color = System.Drawing.ColorTranslator.FromHtml(_traySettings.TrayIconColorHex);
+            var orderedDesigns = GetOrderedDesigns();
+
+            for (var designIndex = 0; designIndex < orderedDesigns.Count; designIndex++)
+            {
+                var option = orderedDesigns[designIndex];
+                var designId = option.Design.ToString();
+                var isSelected = designId == _traySettings.TrayIconDesignId;
+                var scale = _traySettings.GetTrayIconScale(designId);
+                var displayName = _traySettings.TrayIconDesignNameOverrides.TryGetValue(designId, out var custom)
+                    ? custom
+                    : option.DisplayName;
+
+                var preview = new Image
+                {
+                    Width = 32,
+                    Height = 32,
+                    Source = TrayIconRenderer.RenderPreview(option.Design, color, scale),
+                };
+
+                Control nameControl;
+                if (renamingDesignId == designId)
+                {
+                    var nameBox = new TextBox { Text = displayName, Width = 68, FontSize = 10 };
+                    // Клик внутри поля ввода не должен всплыть до карточки и переключить
+                    // выбор формы посреди редактирования имени.
+                    nameBox.PointerPressed += (_, e) => e.Handled = true;
+                    nameBox.KeyDown += (_, e) =>
+                    {
+                        if (e.Key == Key.Enter)
+                        {
+                            CommitRename(designId, nameBox.Text);
+                        }
+                    };
+                    nameBox.LostFocus += (_, _) => CommitRename(designId, nameBox.Text);
+                    nameControl = nameBox;
+                    Dispatcher.UIThread.Post(() => nameBox.Focus(), DispatcherPriority.Background);
+                }
+                else
+                {
+                    var nameText = new TextBlock
+                    {
+                        Text = displayName,
+                        FontSize = 10,
+                        MaxWidth = 56,
+                        TextTrimming = Avalonia.Media.TextTrimming.CharacterEllipsis,
+                    };
+                    ToolTip.SetTip(nameText, displayName);
+
+                    var pencil = new TextBlock { Text = "✎", FontSize = 9, Foreground = mutedBrush, Cursor = handCursor };
+                    ToolTip.SetTip(pencil, "Переименовать");
+                    pencil.PointerPressed += (_, e) =>
+                    {
+                        e.Handled = true;
+                        renamingDesignId = designId;
+                        RefreshDesignGallery();
+                    };
+
+                    var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3, HorizontalAlignment = HorizontalAlignment.Center };
+                    nameRow.Children.Add(nameText);
+                    nameRow.Children.Add(pencil);
+                    nameControl = nameRow;
+                }
+
+                var scaleText = new TextBlock { Text = $"{scale}%", FontSize = 9, Foreground = mutedBrush };
+
+                // Сортировка — кнопки "влево/вправо" вместо drag-and-drop: проще и
+                // надёжнее, тот же стиль, что и остальные явные кнопки в проекте
+                // (± у процента, крестик удаления цвета). Порядок — это индекс в
+                // GetOrderedDesigns(), а не визуальная позиция в WrapPanel (та может
+                // переноситься на новую строку независимо от логического порядка).
+                //
+                // Кнопки встроены в САМУ карточку по бокам (не отдельным рядом снизу):
+                // узкие полосы во всю высоту, каждая скруглена только со своей стороны
+                // (как угол карточки) — так они читаются как часть силуэта плитки, а
+                // не как отдельные наклеенные поверх кружки.
+                var canMoveLeft = designIndex > 0;
+                var canMoveRight = designIndex < orderedDesigns.Count - 1;
+                var arrowActiveBg = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x1C, 0x80, 0x80, 0x80));
+                var arrowInactiveBg = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x08, 0x80, 0x80, 0x80));
+
+                var leftArrow = new Border
+                {
+                    Width = 16,
+                    CornerRadius = new CornerRadius(7, 0, 0, 7),
+                    Background = canMoveLeft ? arrowActiveBg : arrowInactiveBg,
+                    Cursor = canMoveLeft ? handCursor : null,
+                    Child = new TextBlock
+                    {
+                        Text = "◀",
+                        FontSize = 9,
+                        Foreground = canMoveLeft ? mutedBrush : neutralBorderBrush,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                };
+                var rightArrow = new Border
+                {
+                    Width = 16,
+                    CornerRadius = new CornerRadius(0, 7, 7, 0),
+                    Background = canMoveRight ? arrowActiveBg : arrowInactiveBg,
+                    Cursor = canMoveRight ? handCursor : null,
+                    Child = new TextBlock
+                    {
+                        Text = "▶",
+                        FontSize = 9,
+                        Foreground = canMoveRight ? mutedBrush : neutralBorderBrush,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                };
+                ToolTip.SetTip(leftArrow, "Сдвинуть влево");
+                ToolTip.SetTip(rightArrow, "Сдвинуть вправо");
+                leftArrow.PointerPressed += (_, e) => { e.Handled = true; MoveDesign(designId, -1); };
+                rightArrow.PointerPressed += (_, e) => { e.Handled = true; MoveDesign(designId, 1); };
+
+                var centerContent = new StackPanel
+                {
+                    Spacing = 4,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Children = { preview, nameControl, scaleText },
+                };
+
+                var cardLayout = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
+                Grid.SetColumn(leftArrow, 0);
+                Grid.SetColumn(centerContent, 1);
+                Grid.SetColumn(rightArrow, 2);
+                cardLayout.Children.Add(leftArrow);
+                cardLayout.Children.Add(centerContent);
+                cardLayout.Children.Add(rightArrow);
+
+                var card = new Border
+                {
+                    Width = 104,
+                    Height = 88,
+                    Margin = new Thickness(4),
+                    CornerRadius = new CornerRadius(8),
+                    // Прозрачный, но НЕ null — Border без явного фона не ловит клики в
+                    // "пустых" местах (за пределами children), только на самих детях.
+                    Background = Avalonia.Media.Brushes.Transparent,
+                    BorderThickness = new Thickness(isSelected ? 2 : 1),
+                    BorderBrush = isSelected ? accentBrush : neutralBorderBrush,
+                    // Иначе прямоугольные боковые полосы (leftArrow/rightArrow) торчали
+                    // бы за пределы скруглённых внешних углов карточки — Avalonia Border
+                    // по умолчанию не обрезает содержимое по своей геометрии.
+                    ClipToBounds = true,
+                    Cursor = handCursor,
+                    Child = cardLayout,
+                };
+
+                card.PointerPressed += (_, _) =>
+                {
+                    _traySettings.TrayIconDesignId = designId;
+                    ApplyLiveIcon();
+                    RefreshDesignGallery();
+                };
+
+                // Масштаб — индивидуальный на каждую форму: скролл над карточкой, а не
+                // общий контрол на всю галерею.
+                card.PointerWheelChanged += (_, e) =>
+                {
+                    e.Handled = true;
+                    var current = _traySettings.GetTrayIconScale(designId);
+                    var next = Math.Clamp(current + (e.Delta.Y > 0 ? 5 : -5), 100, 170);
+                    _traySettings.TrayIconScaleByDesign[designId] = next;
+
+                    if (isSelected)
+                    {
+                        ApplyLiveIcon();
+                    }
+                    else
+                    {
+                        _traySettingsStore.Save(_traySettings);
+                    }
+
+                    RefreshDesignGallery();
+                };
+
+                designGallery.Children.Add(card);
+            }
+        }
+
+        void CommitRename(string designId, string? newName)
+        {
+            // Children.Clear() внутри RefreshDesignGallery() ниже синхронно отбирает
+            // фокус у ещё "живого" TextBox, из-за чего LostFocus срабатывает ПОВТОРНО
+            // прямо посреди этого же вызова (реентерабельно) — без этой защиты каждое
+            // переименование через Enter+клик-мимо запускало вложенный Clear()/Add(),
+            // из-за чего часть карточек добавлялась в галерею дважды.
+            if (isCommittingRename)
+            {
+                return;
+            }
+
+            isCommittingRename = true;
+            try
+            {
+                newName = newName?.Trim();
+                if (!string.IsNullOrEmpty(newName))
+                {
+                    _traySettings.TrayIconDesignNameOverrides[designId] = newName;
+                    _traySettingsStore.Save(_traySettings);
+                }
+
+                renamingDesignId = null;
+                RefreshDesignGallery();
+            }
+            finally
+            {
+                isCommittingRename = false;
+            }
+        }
+
+        void RefreshColorRow()
+        {
+            colorRow.Children.Clear();
+
+            foreach (var hex in ColorSort.SortByHue(_traySettings.TrayIconColors))
+            {
+                var isSelected = string.Equals(hex, _traySettings.TrayIconColorHex, StringComparison.OrdinalIgnoreCase);
+
+                var swatch = new Border
+                {
+                    Width = 28,
+                    Height = 28,
+                    CornerRadius = new CornerRadius(14),
+                    Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse(hex)),
+                    BorderThickness = new Thickness(isSelected ? 3 : 1),
+                    BorderBrush = isSelected
+                        ? accentBrush
+                        : new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x60, 0x80, 0x80, 0x80)),
+                    Cursor = handCursor,
+                };
+                ToolTip.SetTip(swatch, hex);
+
+                swatch.PointerPressed += (_, _) =>
+                {
+                    _traySettings.TrayIconColorHex = hex;
+                    ApplyLiveIcon();
+                    RefreshColorRow();
+                    RefreshDesignGallery();
+                };
+
+                // Тот же визуальный язык, что уже использован для "скрыть процесс" в
+                // профилях приложений — маленький серый кружок с крестиком в углу.
+                var removeGlyph = new Border
+                {
+                    Width = 14,
+                    Height = 14,
+                    CornerRadius = new CornerRadius(7),
+                    Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0x90, 0x90, 0x90)),
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Top,
+                    Margin = new Thickness(0, -3, -3, 0),
+                    Cursor = handCursor,
+                    Child = new TextBlock
+                    {
+                        Text = "×",
+                        FontSize = 9,
+                        Foreground = Avalonia.Media.Brushes.White,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                };
+                removeGlyph.PointerPressed += (_, e) =>
+                {
+                    e.Handled = true;
+                    _traySettings.TrayIconColors.Remove(hex);
+
+                    if (string.Equals(_traySettings.TrayIconColorHex, hex, StringComparison.OrdinalIgnoreCase)
+                        && _traySettings.TrayIconColors.Count > 0)
+                    {
+                        _traySettings.TrayIconColorHex = _traySettings.TrayIconColors[0];
+                        ApplyLiveIcon();
+                        RefreshDesignGallery();
+                    }
+                    else
+                    {
+                        _traySettingsStore.Save(_traySettings);
+                    }
+
+                    RefreshColorRow();
+                };
+
+                var cell = new Grid { Margin = new Thickness(0, 0, 4, 4) };
+                cell.Children.Add(swatch);
+                cell.Children.Add(removeGlyph);
+                colorRow.Children.Add(cell);
+            }
+
+            var addButton = new Border
+            {
+                Width = 28,
+                Height = 28,
+                CornerRadius = new CornerRadius(14),
+                BorderThickness = new Thickness(1),
+                BorderBrush = neutralBorderBrush,
+                Cursor = handCursor,
+                Margin = new Thickness(0, 0, 4, 4),
+                Child = new TextBlock
+                {
+                    Text = "+",
+                    FontSize = 14,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+            };
+            ToolTip.SetTip(addButton, "Добавить свой цвет");
+            addButton.PointerPressed += async (_, _) =>
+            {
+                _suppressDeactivateClose = true;
+                try
+                {
+                    var picker = new ColorPickerWindow(_traySettings.TrayIconColorHex);
+                    await picker.ShowDialog(this);
+
+                    if (picker.ResultHex is { } hex && !_traySettings.TrayIconColors.Contains(hex, StringComparer.OrdinalIgnoreCase))
+                    {
+                        _traySettings.TrayIconColors.Add(hex);
+                        _traySettingsStore.Save(_traySettings);
+                        RefreshColorRow();
+                    }
+                }
+                finally
+                {
+                    _suppressDeactivateClose = false;
+                }
+            };
+            colorRow.Children.Add(addButton);
+        }
+
+        RefreshDesignGallery();
+        RefreshColorRow();
+
+        return panel;
     }
 
     private void BuildScheduleTab(StackPanel root)
     {
         var scheduleStore = new JsonFileScheduleStore();
         var scheduleSettings = scheduleStore.Load();
+        var monitorNames = new MonitorNameStore().Load();
 
         var enabledCheckBox = new CheckBox { Content = "Включить расписание", IsChecked = scheduleSettings.IsEnabled };
         root.Children.Add(enabledCheckBox);
@@ -513,7 +980,7 @@ public partial class SettingsWindow : Window
                 var active = ScheduleEngine.FindActiveRule(applicable, timeOfDay);
                 activeNowPanel.Children.Add(new TextBlock
                 {
-                    Text = $"{MonitorLabel.Format(monitor)}: {active.Time:HH:mm} → {active.Percent}%",
+                    Text = $"{MonitorLabel.Format(monitor, monitorNames)}: {active.Time:HH:mm} → {active.Percent}%",
                 });
             }
 
@@ -573,7 +1040,7 @@ public partial class SettingsWindow : Window
                     ? "все мониторы"
                     : string.Join(", ", rule.MonitorKeys.Select(key =>
                         _controller.Monitors.FirstOrDefault(m => BrightnessController.GetMonitorKey(m) == key) is { } found
-                            ? MonitorLabel.Format(found)
+                            ? MonitorLabel.Format(found, monitorNames)
                             : key));
 
                 var row = new Grid { ColumnDefinitions = new ColumnDefinitions("60,75,*,Auto") };
@@ -659,7 +1126,7 @@ public partial class SettingsWindow : Window
         var monitorsPickPanel = new StackPanel { Spacing = 4, Margin = new Thickness(20, 0, 0, 0) };
         foreach (var monitor in _controller.Monitors)
         {
-            var checkBox = new CheckBox { Content = MonitorLabel.Format(monitor), IsChecked = true, IsEnabled = false };
+            var checkBox = new CheckBox { Content = MonitorLabel.Format(monitor, monitorNames), IsChecked = true, IsEnabled = false };
             monitorCheckBoxes.Add((monitor, checkBox));
             monitorsPickPanel.Children.Add(checkBox);
         }
@@ -705,6 +1172,7 @@ public partial class SettingsWindow : Window
     {
         var profileStore = new JsonFileAppProfileStore();
         var profileSettings = profileStore.Load();
+        var monitorNames = new MonitorNameStore().Load();
 
         var enabledCheckBox = new CheckBox { Content = "Включить профили приложений", IsChecked = profileSettings.IsEnabled };
         root.Children.Add(enabledCheckBox);
@@ -735,7 +1203,7 @@ public partial class SettingsWindow : Window
 
             var activeProfile = current.Profiles.FirstOrDefault(p => p.Id == activeProfileId);
             var monitor = _controller.Monitors.FirstOrDefault(m => m.AdapterDeviceName == activeMonitorAdapterName);
-            var monitorLabel = monitor is not null ? MonitorLabel.Format(monitor) : activeMonitorAdapterName ?? "?";
+            var monitorLabel = monitor is not null ? MonitorLabel.Format(monitor, monitorNames) : activeMonitorAdapterName ?? "?";
 
             activeNowPanel.Children.Add(new TextBlock
             {
@@ -1204,9 +1672,15 @@ public partial class SettingsWindow : Window
     // едет "бегущей строкой", а не обрезается; в широком окне настроек места и так
     // хватает, поэтому запас пошире и анимация практически никогда не включается.
     internal static Slider AddSliderRow(StackPanel root, string label, int initialPercent, int tickStep, Action<int> onChanged, double nameColumnWidth = 360)
+        => AddSliderRow(root, BuildMarqueeLabel(label, nameColumnWidth), initialPercent, tickStep, onChanged);
+
+    // Перегрузка, принимающая уже готовый control вместо голой строки — нужна
+    // MonitorSlidersPopup (FP8/переименование мониторов), где название должно быть
+    // кликабельным (переключается в поле ввода) и нести маленькую иконку пера, а
+    // не просто быть бегущей строкой без взаимодействия.
+    internal static Slider AddSliderRow(StackPanel root, Control nameLabel, int initialPercent, int tickStep, Action<int> onChanged)
     {
         var headerRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        var nameLabel = BuildMarqueeLabel(label, nameColumnWidth);
         // Ширина ФИКСИРОВАНА (не по содержимому) — иначе "Auto"-колонка меняла размер
         // на каждый тик процента (9% уже, 100% шире), сосед в "*"-колонке от этого
         // ужимался/расширялся и дёргался при каждом изменении яркости.
@@ -1491,7 +1965,42 @@ public partial class SettingsWindow : Window
     // готового TextBlock просто подменяем САМ ТЕКСТ на видимое окно символов (как
     // старая бегущая строка на LCD-табло) — это не может сломать раскладку, потому
     // что каждый кадр — это просто обычная строка, умещающаяся в отведённую ширину.
-    private static Control BuildMarqueeLabel(string text, double width)
+    // Internal — переиспользуется MonitorSlidersPopup (FP8/переименование мониторов)
+    // для построения кликабельного названия монитора, не только этим окном.
+    // Число колонок для галереи форм иконки трея (см. BuildTrayIconSection) — не
+    // просто "сколько влезает по ширине", а лучшее среди [maxColumns-1, maxColumns]
+    // по заполненности последней строки. Без этого ограничения снизу (только -1,
+    // не перебор всех вариантов до 1) идеальным "нулевым остатком" всегда выглядит
+    // 1 колонка (последняя "строка" из одного элемента тривиально заполнена целиком) —
+    // формально верно, но превращает галерею в бесполезный вертикальный список.
+    // Например, 6 форм при maxColumns=4 лягут в 3 колонки (3+3), а не в 4 (4+2).
+    private static int ComputeOptimalColumns(int totalCount, int maxColumns)
+    {
+        if (totalCount <= 0)
+        {
+            return Math.Max(1, maxColumns);
+        }
+
+        var minColumns = Math.Max(1, maxColumns - 1);
+        var best = maxColumns;
+        var bestPadding = int.MaxValue;
+
+        for (var cols = maxColumns; cols >= minColumns; cols--)
+        {
+            var rows = (int)Math.Ceiling(totalCount / (double)cols);
+            var padding = cols * rows - totalCount;
+
+            if (padding < bestPadding || (padding == bestPadding && cols > best))
+            {
+                bestPadding = padding;
+                best = cols;
+            }
+        }
+
+        return best;
+    }
+
+    internal static Control BuildMarqueeLabel(string text, double width)
     {
         var textBlock = new TextBlock
         {
@@ -1500,57 +2009,113 @@ public partial class SettingsWindow : Window
             TextWrapping = Avalonia.Media.TextWrapping.NoWrap,
         };
 
-        // Грубая оценка символов на пиксель — не нужна точность до пикселя, только
-        // разумный размер окна прокрутки; не зависит от реального шрифта/стиля,
-        // поэтому не подвержено гонкам со временем применения темы.
-        const double approxPixelsPerChar = 7.0;
-        var visibleChars = Math.Max(3, (int)(width / approxPixelsPerChar));
+        // Сколько символов от offset реально помещается в width — раньше это была
+        // грубая оценка "7px на символ", независимая от реального шрифта. Проблема:
+        // заглавные буквы и цифры ("...DISPLAY3)") заметно шире этой средней
+        // оценки, поэтому реально отрисованная строка оказывалась ШИРЕ отведённого
+        // места, и Avalonia молча обрезала лишний хвост — обычно как раз последний
+        // символ (закрывающую скобку), хотя сама логика прокрутки считала его
+        // показанным целиком.
+        //
+        // Первая попытка честного измерения мерила текст через САМ textBlock — но у
+        // него уже задано фиксированное Width, а явно заданное Width у Avalonia
+        // ограничивает результат Measure() сверху: DesiredSize.Width никогда не
+        // превышал width, даже когда реальный текст был шире, — из-за этого
+        // "проверка" всегда считала, что текст помещается целиком, и анимация вообще
+        // переставала запускаться (текст просто показывался статично обрезанным).
+        // Измеряем поэтому ОТДЕЛЬНЫМ TextBlock без заданной ширины — со скопированным
+        // шрифтом реального лейбла (стиль темы к моменту AttachedToVisualTree уже
+        // точно применён), но без ограничения, которое мешало бы Measure() увидеть
+        // реальный размер контента.
+        var measurer = new TextBlock { TextWrapping = Avalonia.Media.TextWrapping.NoWrap };
 
-        if (text.Length <= visibleChars)
+        int CountFittingChars(int offset)
         {
-            textBlock.Text = text;
-            return textBlock;
+            var maxChars = text.Length - offset;
+            for (var count = maxChars; count > 1; count--)
+            {
+                measurer.Text = text.Substring(offset, count);
+                measurer.Measure(Size.Infinity);
+                if (measurer.DesiredSize.Width <= width)
+                {
+                    return count;
+                }
+            }
+
+            return Math.Min(1, maxChars);
         }
 
-        var offset = 0;
-        var forward = true;
-        var pauseTicksRemaining = 0;
-        var maxOffset = text.Length - visibleChars;
-        const int pauseTicksAtEnds = 8; // ~1.6с на паузу, чтобы конец/начало успевали прочитаться
+        DispatcherTimer? timer = null;
+        var initialized = false;
 
-        void Refresh() => textBlock.Text = text.Substring(offset, visibleChars);
-        Refresh();
-
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
-        timer.Tick += (_, _) =>
+        textBlock.AttachedToVisualTree += (_, _) =>
         {
-            if (pauseTicksRemaining > 0)
+            if (initialized)
             {
-                pauseTicksRemaining--;
                 return;
             }
 
-            offset += forward ? 1 : -1;
-            if (offset >= maxOffset)
+            initialized = true;
+
+            measurer.FontFamily = textBlock.FontFamily;
+            measurer.FontSize = textBlock.FontSize;
+            measurer.FontWeight = textBlock.FontWeight;
+            measurer.FontStyle = textBlock.FontStyle;
+
+            if (CountFittingChars(0) >= text.Length)
             {
-                offset = maxOffset;
-                forward = false;
-                pauseTicksRemaining = pauseTicksAtEnds;
-            }
-            else if (offset <= 0)
-            {
-                offset = 0;
-                forward = true;
-                pauseTicksRemaining = pauseTicksAtEnds;
+                textBlock.Text = text;
+                return;
             }
 
+            var offset = 0;
+            var forward = true;
+            var pauseTicksRemaining = 0;
+            const int pauseTicksAtEnds = 8; // ~1.6с на паузу, чтобы конец/начало успевали прочитаться
+
+            // Максимальный сдвиг вправо — минимальный offset, при котором ОСТАТОК
+            // строки уже помещается в width целиком (дальше двигать некуда, конец
+            // текста и так весь виден).
+            var maxOffset = 0;
+            while (maxOffset < text.Length && CountFittingChars(maxOffset) < text.Length - maxOffset)
+            {
+                maxOffset++;
+            }
+
+            void Refresh() => textBlock.Text = text.Substring(offset, CountFittingChars(offset));
             Refresh();
+
+            timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+            timer.Tick += (_, _) =>
+            {
+                if (pauseTicksRemaining > 0)
+                {
+                    pauseTicksRemaining--;
+                    return;
+                }
+
+                offset += forward ? 1 : -1;
+                if (offset >= maxOffset)
+                {
+                    offset = maxOffset;
+                    forward = false;
+                    pauseTicksRemaining = pauseTicksAtEnds;
+                }
+                else if (offset <= 0)
+                {
+                    offset = 0;
+                    forward = true;
+                    pauseTicksRemaining = pauseTicksAtEnds;
+                }
+
+                Refresh();
+            };
+            timer.Start();
         };
-        timer.Start();
 
         // Иначе таймер продолжит тикать вечно в фоне после закрытия окна —
         // строка больше не в дереве, значения меняются, но их никто не видит.
-        textBlock.DetachedFromVisualTree += (_, _) => timer.Stop();
+        textBlock.DetachedFromVisualTree += (_, _) => timer?.Stop();
 
         return textBlock;
     }

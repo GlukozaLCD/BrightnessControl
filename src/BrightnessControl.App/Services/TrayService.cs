@@ -19,6 +19,7 @@ public sealed class TrayService : IDisposable
 {
     private const uint IconId = 1;
     private const uint WM_TRAYICON = 0x8000 + 1; // WM_APP + 1
+    private const uint WM_SET_ICON = 0x8000 + 2; // WM_APP + 2 — смена иконки "на лету" (см. SetIcon)
 
     // Класс окна регистрируется с уникальным именем на инстанс, чтобы его WndProc мог
     // напрямую указывать на метод ЭТОГО инстанса — тред-сообщения (скролл, правый клик)
@@ -26,7 +27,7 @@ public sealed class TrayService : IDisposable
     private readonly string _className = $"BrightnessControlTrayWindow_{Guid.NewGuid():N}";
 
     private readonly string _tooltip;
-    private readonly Uri _iconUri;
+    private readonly Icon _initialIcon;
     private readonly User32Native.WndProc _wndProcDelegate;
     private readonly User32Native.HookProc _hookProcDelegate;
 
@@ -44,9 +45,9 @@ public sealed class TrayService : IDisposable
     public event Action<TrayClickEventArgs>? RightClicked;
     public event Action<TrayClickEventArgs>? LeftClicked;
 
-    public TrayService(Uri iconUri, string tooltip)
+    public TrayService(Icon initialIcon, string tooltip)
     {
-        _iconUri = iconUri;
+        _initialIcon = initialIcon;
         _tooltip = tooltip;
         _wndProcDelegate = WindowProc;
         _hookProcDelegate = HookProc;
@@ -93,7 +94,8 @@ public sealed class TrayService : IDisposable
 
         _hwnd = User32Native.CreateWindowEx(0, _className, string.Empty, 0, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
 
-        _hIcon = LoadTrayIcon(_iconUri);
+        _iconResource = _initialIcon;
+        _hIcon = _initialIcon.Handle;
 
         var data = new Shell32.NOTIFYICONDATA
         {
@@ -130,6 +132,12 @@ public sealed class TrayService : IDisposable
 
     private IntPtr WindowProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
+        if (msg == WM_SET_ICON)
+        {
+            ApplyNewIcon(lParam);
+            return IntPtr.Zero;
+        }
+
         if (msg == WM_TRAYICON)
         {
             var mouseMsg = (uint)(lParam.ToInt64() & 0xFFFF);
@@ -148,6 +156,28 @@ public sealed class TrayService : IDisposable
         }
 
         return User32Native.DefWindowProc(hWnd, msg, wParam, lParam);
+    }
+
+    private void ApplyNewIcon(IntPtr lParam)
+    {
+        var handle = GCHandle.FromIntPtr(lParam);
+        var newIcon = (Icon)handle.Target!;
+        handle.Free();
+
+        var data = new Shell32.NOTIFYICONDATA
+        {
+            cbSize = Marshal.SizeOf<Shell32.NOTIFYICONDATA>(),
+            hWnd = _hwnd,
+            uID = IconId,
+            uFlags = Shell32.NIF_ICON,
+            hIcon = newIcon.Handle,
+        };
+        Shell32.Shell_NotifyIcon(Shell32.NIM_MODIFY, ref data);
+
+        var old = _iconResource;
+        _iconResource = newIcon;
+        _hIcon = newIcon.Handle;
+        old?.Dispose();
     }
 
     private IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam)
@@ -181,6 +211,19 @@ public sealed class TrayService : IDisposable
         return pt.X >= rect.X && pt.X < rect.X + rect.Width && pt.Y >= rect.Y && pt.Y < rect.Y + rect.Height;
     }
 
+    // Живая смена иконки трея без пересоздания самого значка (FP8): иконка уже
+    // отрисована вызывающим кодом (см. TrayIconRenderer) и передаётся STA-потоку
+    // трея через PostMessage, т.к. там же создан _hwnd/_hIcon/_iconResource и
+    // Shell_NotifyIcon(NIM_MODIFY) должен применяться рядом с остальной
+    // обработкой сообщений этого окна, а не с постороннего потока. Managed-объект
+    // Icon передаётся через GCHandle, т.к. Win32-сообщение способно нести только
+    // указатель/число, а не ссылку на .NET-объект напрямую.
+    public void SetIcon(Icon icon)
+    {
+        var handle = GCHandle.Alloc(icon);
+        User32Native.PostMessage(_hwnd, WM_SET_ICON, IntPtr.Zero, GCHandle.ToIntPtr(handle));
+    }
+
     // Нужен вызывающему коду (App.axaml.cs), чтобы прицепить поповер глобального
     // слайдера точно к иконке трея (FP9 Фаза 2) — не по центру монитора, как окно
     // настроек. Возвращает дружелюбный MonitorBounds, а не сырой Shell32.RECT.
@@ -202,15 +245,5 @@ public sealed class TrayService : IDisposable
 
         rect = new MonitorBounds(native.Left, native.Top, native.Right - native.Left, native.Bottom - native.Top);
         return true;
-    }
-
-    // Хэндл иконки должен жить, пока она зарегистрирована в трее — Icon.Dispose()
-    // уничтожает и сам HICON, поэтому объект хранится как поле и освобождается только
-    // после NIM_DELETE (см. конец RunMessageLoop), а не сразу после создания хэндла.
-    private IntPtr LoadTrayIcon(Uri iconUri)
-    {
-        using var stream = Avalonia.Platform.AssetLoader.Open(iconUri);
-        _iconResource = new Icon(stream);
-        return _iconResource.Handle;
     }
 }

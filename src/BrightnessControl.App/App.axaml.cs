@@ -69,9 +69,16 @@ public partial class App : Application
                 isMonitorSuppressed: monitor => _idleEngine?.IsDimmed == true
                     || _appProfileEngine?.ActiveMonitorAdapterDeviceName == monitor.AdapterDeviceName);
 
-            _trayService = new TrayService(
-                new Uri("avares://BrightnessControl.App/Assets/avalonia-logo.ico"),
-                "BrightnessControl");
+            if (!Enum.TryParse<TrayIconDesign>(_traySettings.TrayIconDesignId, out var initialDesign))
+            {
+                initialDesign = TrayIconDesign.Spokes;
+            }
+
+            var initialTrayIcon = TrayIconRenderer.Render(
+                initialDesign,
+                System.Drawing.ColorTranslator.FromHtml(_traySettings.TrayIconColorHex),
+                _traySettings.GetTrayIconScale(_traySettings.TrayIconDesignId));
+            _trayService = new TrayService(initialTrayIcon, "BrightnessControl");
             _trayService.ScrollNotches += OnScrollNotches;
             _trayService.RightClicked += e => Dispatcher.UIThread.Post(() => OpenSettingsWindow(e.CursorX, e.CursorY, desktop));
             _trayService.LeftClicked += e => Dispatcher.UIThread.Post(() => OpenGlobalSliderPopup(e.CursorX, e.CursorY));
@@ -136,6 +143,7 @@ public partial class App : Application
                 _appProfileEngine,
                 _idleEngine,
                 _accentColorService,
+                _trayService,
                 () => desktop.Shutdown());
             _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         }
@@ -187,7 +195,8 @@ public partial class App : Application
                 _globalPercent = ApplyStickyStep(_globalPercent, direction, step, stickyValues);
             }
 
-            _hud?.ShowPercent(_globalPercent, new PixelPoint(e.CursorX, e.CursorY));
+            var iconRect = _trayService?.TryGetIconRect(out var rect) == true ? rect : new MonitorBounds(e.CursorX, e.CursorY, 0, 0);
+            _hud?.ShowPercent(_globalPercent, iconRect);
             _globalApplier?.Request(_globalPercent);
         });
     }
