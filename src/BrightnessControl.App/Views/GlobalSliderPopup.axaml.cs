@@ -80,11 +80,19 @@ public partial class GlobalSliderPopup : Window
         headerRow.Children.Add(expandButton);
         root.Children.Add(headerRow);
 
+        // ВАЖНО: nameColumnWidth передаётся явно (160) — этот вызов ЗАБЫЛ его передать
+        // раньше, из-за чего использовалась ширина по умолчанию (360, рассчитана на
+        // широкое SettingsWindow), а это окно всего 260px. Marquee-блок шириной 360px
+        // не помещался в окно и переполнял раскладку — вот настоящая причина
+        // "сломанной строки", которую не решали ни FormattedText, ни отказ от
+        // RenderTransform/ClipToBounds: дело было не в механике бегущей строки, а в
+        // одном пропущенном аргументе.
+        const double nameColumnWidth = 160;
         SettingsWindow.AddSliderRow(root, "Все мониторы", ComputeAveragePercent(), _sliderStepPercent, percent =>
         {
             _monitorSlidersPopup?.SetAllSliders(percent);
             _globalApplier.Request(percent);
-        });
+        }, nameColumnWidth);
 
         expandButton.Click += (_, _) => ToggleMonitorSliders();
     }

@@ -7,4 +7,20 @@
     <Application.Styles>
         <FluentTheme />
     </Application.Styles>
+
+    <!-- FP9: собственный, более глубокий тёмный фон окон (по образцу Volumey) —
+         стандартный тёмный фон Fluent-темы недостаточно тёмный для этого стиля.
+         В светлой теме остаётся обычный белый, чтобы не ломать её. -->
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="AppWindowBackground" Color="#FFFFFF" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="AppWindowBackground" Color="#0F0F0F" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
 </Application>

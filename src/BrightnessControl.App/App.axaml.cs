@@ -23,6 +23,7 @@ public partial class App : Application
     private ScheduleEngine? _scheduleEngine;
     private AppProfileEngine? _appProfileEngine;
     private IdleEngine? _idleEngine;
+    private AccentColorService? _accentColorService;
     private int _globalPercent = 50;
     private int? _stickyClungValue;
 
@@ -46,6 +47,7 @@ public partial class App : Application
             _appSettingsStore = new AppSettingsStore();
             _appSettings = _appSettingsStore.Load();
             ApplyTheme(_appSettings.Theme);
+            _accentColorService = new AccentColorService(_appSettings, _appSettingsStore);
             _globalPercent = ComputeInitialGlobalPercent(_brightnessController);
             _globalApplier = new CoalescingBrightnessApplier(
                 percent => _brightnessController?.SetAllBrightness(percent),
@@ -123,9 +125,6 @@ public partial class App : Application
             return;
         }
 
-        var targetMonitor = MonitorLookup.FindAtPoint(_brightnessController.Monitors, cursorX, cursorY)
-            ?? _brightnessController.Monitors.FirstOrDefault();
-
         if (_settingsWindow is null)
         {
             _settingsWindow = new SettingsWindow(
@@ -136,19 +135,18 @@ public partial class App : Application
                 _traySettingsStore ?? new TraySettingsStore(),
                 _appProfileEngine,
                 _idleEngine,
+                _accentColorService,
                 () => desktop.Shutdown());
             _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         }
 
-        if (targetMonitor is not null)
+        if (!(_trayService?.TryGetIconRect(out var iconRect) ?? false))
         {
-            _settingsWindow.ShowCenteredOn(targetMonitor.Bounds);
-        }
-        else
-        {
-            _settingsWindow.Show();
+            // Иконку не нашли (редкий случай) — прицепляемся к точке клика вместо неё.
+            iconRect = new MonitorBounds(cursorX, cursorY, 0, 0);
         }
 
+        _settingsWindow.ShowNearIcon(iconRect);
         _settingsWindow.Activate();
     }
 

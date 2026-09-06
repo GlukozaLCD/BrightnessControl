@@ -22,6 +22,7 @@ public partial class SettingsWindow : Window
     private readonly TraySettingsStore _traySettingsStore;
     private readonly AppProfileEngine? _appProfileEngine;
     private readonly IdleEngine? _idleEngine;
+    private readonly AccentColorService? _accentColorService;
     private readonly Action _onExitRequested;
 
     // Двухуровневая навигация (FP9 Фаза 3): _selectedCategory == null — показан
@@ -45,6 +46,7 @@ public partial class SettingsWindow : Window
         _traySettingsStore = null!;
         _appProfileEngine = null;
         _idleEngine = null;
+        _accentColorService = null;
         _onExitRequested = () => { };
         InitializeComponent();
     }
@@ -57,6 +59,7 @@ public partial class SettingsWindow : Window
         TraySettingsStore traySettingsStore,
         AppProfileEngine? appProfileEngine,
         IdleEngine? idleEngine,
+        AccentColorService? accentColorService,
         Action onExitRequested)
     {
         _controller = controller;
@@ -66,6 +69,7 @@ public partial class SettingsWindow : Window
         _traySettingsStore = traySettingsStore;
         _appProfileEngine = appProfileEngine;
         _idleEngine = idleEngine;
+        _accentColorService = accentColorService;
         _onExitRequested = onExitRequested;
         InitializeComponent();
         BuildContent();
@@ -178,18 +182,19 @@ public partial class SettingsWindow : Window
         AvaloniaXamlLoader.Load(this);
     }
 
-    // Открывается по центру КОНКРЕТНОГО монитора, на котором произошло взаимодействие
-    // с треем, а не только на основном мониторе системы — это явное требование проекта.
-    public void ShowCenteredOn(MonitorBounds bounds)
+    // Прицеплено к иконке трея (как GlobalSliderPopup), а не по центру монитора
+    // клика — FP9 Фаза 6: центрирование по монитору для окна настроек "всё ещё
+    // не устраивало" пользователя после того, как левый клик забрал себе поповер.
+    public void ShowNearIcon(MonitorBounds iconRect)
     {
+        var anchor = new PixelPoint(iconRect.X + iconRect.Width, iconRect.Y - 8);
+
         if (!IsVisible)
         {
             Show();
         }
 
-        Position = new PixelPoint(
-            bounds.X + (bounds.Width - (int)Width) / 2,
-            bounds.Y + (bounds.Height - (int)Height) / 2);
+        Position = new PixelPoint(anchor.X - (int)Width, anchor.Y - (int)Height);
     }
 
     private void BuildContent()
@@ -216,14 +221,19 @@ public partial class SettingsWindow : Window
     }
 
     // Кнопка сверху списка перекидывает сам список категорий между правым и левым
-    // краем окна — стрелка всегда показывает, КУДА он поедет по клику (не где он
-    // сейчас), поэтому разворачивается в противоположную сторону при каждом клике.
+    // краем окна. Раньше была стрелкой ("←"/"→") — но выглядела так же, как кнопка
+    // "Назад" в подкатегориях, путала. Теперь — маленькая иконка-диаграмма макета
+    // (два блока: узкая полоса-панель + широкая область), показывающая ТЕКУЩУЮ
+    // сторону списка, а не направление клика — см. BuildLayoutFlipIcon.
     private void SetupNavFlip()
     {
         var grid = this.FindControl<Grid>("NavContentGrid")!;
         var navBorder = this.FindControl<Border>("NavBorder")!;
         var contentScroll = (Control)grid.Children.First(c => c is ScrollViewer);
         var flipButton = this.FindControl<Button>("NavFlipButton")!;
+
+        flipButton.Content = BuildLayoutFlipIcon(_navOnRight);
+        ToolTip.SetTip(flipButton, "Переместить список категорий на другую сторону окна");
 
         flipButton.Click += (_, _) =>
         {
@@ -240,7 +250,34 @@ public partial class SettingsWindow : Window
             Grid.SetColumn(navBorder, _navOnRight ? 1 : 0);
             Grid.SetColumn(contentScroll, _navOnRight ? 0 : 1);
             navBorder.HorizontalAlignment = _navOnRight ? HorizontalAlignment.Right : HorizontalAlignment.Left;
-            flipButton.Content = _navOnRight ? "←" : "→";
+            flipButton.Content = BuildLayoutFlipIcon(_navOnRight);
+        };
+    }
+
+    // Маленькая диаграмма окна: внешняя рамка + внутренняя перегородка, узкая
+    // закрашенная полоса — там, где СЕЙЧАС находится список категорий (не куда он
+    // поедет по клику, а где он есть прямо сейчас) — так пользователь всегда видит
+    // текущий макет, а не гадает по стрелке.
+    private static Control BuildLayoutFlipIcon(bool navOnRight)
+    {
+        var outline = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0x90, 0x90, 0x90));
+
+        var grid = new Grid
+        {
+            ColumnDefinitions = navOnRight ? new ColumnDefinitions("*,Auto") : new ColumnDefinitions("Auto,*"),
+        };
+        var panel = new Border { Width = 5, Background = outline };
+        Grid.SetColumn(panel, navOnRight ? 1 : 0);
+        grid.Children.Add(panel);
+
+        return new Border
+        {
+            Width = 18,
+            Height = 14,
+            CornerRadius = new CornerRadius(2),
+            BorderBrush = outline,
+            BorderThickness = new Thickness(1.3),
+            Child = grid,
         };
     }
 
@@ -422,6 +459,12 @@ public partial class SettingsWindow : Window
     {
         root.Children.Add(new TextBlock { Text = "Тема", FontWeight = Avalonia.Media.FontWeight.Bold });
         root.Children.Add(BuildThemeSelector());
+
+        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
+        var accentCheckBox = new CheckBox { Content = "Использовать акцентный цвет Windows", IsChecked = _appSettings.UseWindowsAccentColor };
+        ToolTip.SetTip(accentCheckBox, "Подкрашивает выделение/акцентные элементы в цвет, который вы выбрали в Параметры Windows → Персонализация → Цвета, вместо стандартного синего.");
+        accentCheckBox.IsCheckedChanged += (_, _) => _accentColorService?.SetEnabled(accentCheckBox.IsChecked ?? true);
+        root.Children.Add(accentCheckBox);
     }
 
     private void BuildScheduleTab(StackPanel root)
@@ -502,7 +545,7 @@ public partial class SettingsWindow : Window
         // Заголовки колонок — раньше их не было, и сразу не было понятно, что
         // означает каждое число в строке правила (FP9 Фаза 5: форма расписания
         // была "странной и непонятной").
-        var rulesHeaderRow = new Grid { ColumnDefinitions = new ColumnDefinitions("60,50,*,Auto") };
+        var rulesHeaderRow = new Grid { ColumnDefinitions = new ColumnDefinitions("60,75,*,Auto") };
         var rulesHeaderStyle = new Action<TextBlock>(t => t.FontWeight = Avalonia.Media.FontWeight.Bold);
         var timeHeader = new TextBlock { Text = "Время" };
         var percentHeader = new TextBlock { Text = "Яркость" };
@@ -533,7 +576,7 @@ public partial class SettingsWindow : Window
                             ? MonitorLabel.Format(found)
                             : key));
 
-                var row = new Grid { ColumnDefinitions = new ColumnDefinitions("60,50,*,Auto") };
+                var row = new Grid { ColumnDefinitions = new ColumnDefinitions("60,75,*,Auto") };
                 var timeText = new TextBlock { Text = $"{rule.Time:HH:mm}", VerticalAlignment = VerticalAlignment.Center };
                 var percentText = new TextBlock { Text = $"{rule.Percent}%", VerticalAlignment = VerticalAlignment.Center };
                 var scopeLabel = new TextBlock { Text = scopeText, VerticalAlignment = VerticalAlignment.Center, TextWrapping = Avalonia.Media.TextWrapping.Wrap };
@@ -1164,7 +1207,10 @@ public partial class SettingsWindow : Window
     {
         var headerRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         var nameLabel = BuildMarqueeLabel(label, nameColumnWidth);
-        var percentLabel = new TextBlock { Text = $"{initialPercent}%", HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+        // Ширина ФИКСИРОВАНА (не по содержимому) — иначе "Auto"-колонка меняла размер
+        // на каждый тик процента (9% уже, 100% шире), сосед в "*"-колонке от этого
+        // ужимался/расширялся и дёргался при каждом изменении яркости.
+        var percentLabel = new TextBlock { Text = $"{initialPercent}%", Width = 42, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(nameLabel, 0);
         Grid.SetColumn(percentLabel, 1);
         headerRow.Children.Add(nameLabel);
@@ -1438,76 +1484,74 @@ public partial class SettingsWindow : Window
         return row;
     }
 
+    // Раньше это был RenderTransform (сдвиг X) + Border с ClipToBounds — на практике
+    // ломало раскладку всей строки (текст "убегал" на соседнюю строку окна ниже),
+    // видимо из-за того, как Avalonia сочетает трансформацию рендера с обрезкой у
+    // родителя. Полностью отказались от transform/clip: вместо визуального сдвига
+    // готового TextBlock просто подменяем САМ ТЕКСТ на видимое окно символов (как
+    // старая бегущая строка на LCD-табло) — это не может сломать раскладку, потому
+    // что каждый кадр — это просто обычная строка, умещающаяся в отведённую ширину.
     private static Control BuildMarqueeLabel(string text, double width)
     {
         var textBlock = new TextBlock
         {
-            Text = text,
+            Width = width,
             VerticalAlignment = VerticalAlignment.Center,
             TextWrapping = Avalonia.Media.TextWrapping.NoWrap,
         };
-        var clip = new Border { ClipToBounds = true, Width = width, Child = textBlock };
 
-        var transform = new Avalonia.Media.TranslateTransform();
-        textBlock.RenderTransform = transform;
+        // Грубая оценка символов на пиксель — не нужна точность до пикселя, только
+        // разумный размер окна прокрутки; не зависит от реального шрифта/стиля,
+        // поэтому не подвержено гонкам со временем применения темы.
+        const double approxPixelsPerChar = 7.0;
+        var visibleChars = Math.Max(3, (int)(width / approxPixelsPerChar));
 
-        double? overflow = null;
+        if (text.Length <= visibleChars)
+        {
+            textBlock.Text = text;
+            return textBlock;
+        }
+
+        var offset = 0;
         var forward = true;
         var pauseTicksRemaining = 0;
-        const double pixelsPerTick = 1.2;
-        const int pauseTicksAtEnds = 25; // ~750мс на паузу, чтобы конец/начало успевали прочитаться
+        var maxOffset = text.Length - visibleChars;
+        const int pauseTicksAtEnds = 8; // ~1.6с на паузу, чтобы конец/начало успевали прочитаться
 
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(30) };
+        void Refresh() => textBlock.Text = text.Substring(offset, visibleChars);
+        Refresh();
+
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
         timer.Tick += (_, _) =>
         {
-            if (overflow is null)
-            {
-                var typeface = new Avalonia.Media.Typeface(textBlock.FontFamily, textBlock.FontStyle, textBlock.FontWeight);
-                var formatted = new Avalonia.Media.FormattedText(
-                    text,
-                    System.Globalization.CultureInfo.CurrentCulture,
-                    Avalonia.Media.FlowDirection.LeftToRight,
-                    typeface,
-                    textBlock.FontSize,
-                    null);
-                var measured = formatted.Width - width;
-                if (measured <= 0)
-                {
-                    timer.Stop();
-                    return;
-                }
-
-                overflow = measured;
-            }
-
             if (pauseTicksRemaining > 0)
             {
                 pauseTicksRemaining--;
                 return;
             }
 
-            var next = transform.X + (forward ? -pixelsPerTick : pixelsPerTick);
-            if (next <= -overflow)
+            offset += forward ? 1 : -1;
+            if (offset >= maxOffset)
             {
-                next = -overflow.Value;
+                offset = maxOffset;
                 forward = false;
                 pauseTicksRemaining = pauseTicksAtEnds;
             }
-            else if (next >= 0)
+            else if (offset <= 0)
             {
-                next = 0;
+                offset = 0;
                 forward = true;
                 pauseTicksRemaining = pauseTicksAtEnds;
             }
 
-            transform.X = next;
+            Refresh();
         };
         timer.Start();
 
         // Иначе таймер продолжит тикать вечно в фоне после закрытия окна —
         // строка больше не в дереве, значения меняются, но их никто не видит.
-        clip.DetachedFromVisualTree += (_, _) => timer.Stop();
+        textBlock.DetachedFromVisualTree += (_, _) => timer.Stop();
 
-        return clip;
+        return textBlock;
     }
 }

@@ -7,7 +7,7 @@
         WindowDecorations="None"
         ShowInTaskbar="False"
         Topmost="True">
-    <Border BorderBrush="#40808080" BorderThickness="1">
+    <Border BorderBrush="#40808080" BorderThickness="1" Background="{DynamicResource AppWindowBackground}">
         <DockPanel>
             <Grid DockPanel.Dock="Top" Height="32" ColumnDefinitions="*,Auto">
                 <Border x:Name="CloseButton"
@@ -19,6 +19,10 @@
                                VerticalAlignment="Center" />
                 </Border>
             </Grid>
+            <!-- Тонкая акцентная полоска на всю ширину окна сразу под заголовком —
+                 по образцу Volumey; теперь основной способ показать акцент вместо
+                 рамки вокруг сайдбара (её убрали, см. NavBorder ниже). -->
+            <Border DockPanel.Dock="Top" Height="3" Background="{DynamicResource AppAccentBrush}" />
             <Grid x:Name="NavContentGrid" ColumnDefinitions="*,Auto">
                 <ScrollViewer Grid.Column="0">
                     <StackPanel x:Name="ContentPanel" Margin="16" Spacing="8" />
@@ -27,13 +31,10 @@
                         Grid.Column="1"
                         Width="170"
                         HorizontalAlignment="Right"
-                        VerticalAlignment="Top"
-                        BorderBrush="Black"
-                        BorderThickness="1">
+                        VerticalAlignment="Top">
                     <DockPanel>
                         <Button x:Name="NavFlipButton"
                                 DockPanel.Dock="Top"
-                                Content="←"
                                 HorizontalAlignment="Stretch"
                                 HorizontalContentAlignment="Center" />
                         <StackPanel x:Name="NavList" Margin="6" Spacing="4" />

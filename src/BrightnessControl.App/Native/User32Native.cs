@@ -98,4 +98,20 @@ internal static class User32Native
 
     [DllImport("user32.dll")]
     public static extern bool GetCursorPos(out POINT lpPoint);
+
+    // Для FP9 Фазы 7 — не форсировать акцентный цвет Windows поверх режима высокой
+    // контрастности (accessibility): в этом режиме честная тема важнее вливания в систему.
+    public const uint SPI_GETHIGHCONTRAST = 0x0042;
+    public const uint HCF_HIGHCONTRASTON = 0x00000001;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct HIGHCONTRAST
+    {
+        public uint cbSize;
+        public uint dwFlags;
+        public IntPtr lpszDefaultScheme;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, ref HIGHCONTRAST pvParam, uint fWinIni);
 }

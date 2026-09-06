@@ -8,7 +8,7 @@
         WindowDecorations="None"
         ShowInTaskbar="False"
         Topmost="True">
-    <Border BorderBrush="#40808080" BorderThickness="1">
+    <Border BorderBrush="#40808080" BorderThickness="1" Background="{DynamicResource AppWindowBackground}">
         <StackPanel x:Name="Root" Margin="14" Spacing="8" />
     </Border>
 </Window>
