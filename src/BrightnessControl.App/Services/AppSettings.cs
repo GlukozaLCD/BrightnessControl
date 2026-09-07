@@ -23,4 +23,15 @@ public sealed class AppSettings
     // пользователь выбрал в Параметры Windows → Персонализация → Цвета, а не в
     // зашитый по умолчанию синий Avalonia — приложение должно "вливаться" в систему.
     public bool UseWindowsAccentColor { get; set; } = true;
+
+    // FP13: свой акцентный цвет — используется вместо системного, когда
+    // UseWindowsAccentColor выключен. Обычный Fluent-синий по умолчанию —
+    // нейтральная отправная точка для пикера, ничего не навязывает.
+    public string CustomAccentColorHex { get; set; } = "#0078D4";
+
+    // FP13: правило вычисления ВТОРИЧНОГО акцентного цвета из основного (см.
+    // ColorHarmony) — строка, а не голый enum, по той же схеме
+    // расширяемости, что и TrayIconDesignId/HudStyleId. Действует всегда,
+    // независимо от источника основного цвета (Windows или свой).
+    public string ColorHarmonySchemeId { get; set; } = ColorHarmonyScheme.Complementary.ToString();
 }

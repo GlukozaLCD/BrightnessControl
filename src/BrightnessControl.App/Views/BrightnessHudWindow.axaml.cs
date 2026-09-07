@@ -113,8 +113,12 @@ public partial class BrightnessHudWindow : Window
         Canvas.SetTop(disc, SunCenter - DiscRadius);
         canvas.Children.Add(disc);
 
-        primaryRays = BuildRays(canvas, PrimaryAnglesDeg.Length, PrimaryStrokeThickness);
-        secondaryRays = BuildRays(canvas, SecondaryAnglesDeg.Length, SecondaryStrokeThickness);
+        // Вторичные лучи (FP13) красятся отдельным AppAccentSecondaryBrush —
+        // вычисляется из основного акцента по цветовой гармонии
+        // (AccentColorService/ColorHarmony), а не тем же самым цветом, что и
+        // диск/основные лучи.
+        primaryRays = BuildRays(canvas, PrimaryAnglesDeg.Length, PrimaryStrokeThickness, "AppAccentBrush");
+        secondaryRays = BuildRays(canvas, SecondaryAnglesDeg.Length, SecondaryStrokeThickness, "AppAccentSecondaryBrush");
 
         // Число яркости — ЦИФРАМИ БЕЗ "%" (см. Фазу 3), поверх диска. Без
         // явных Width/Height — TextBlock не центрирует своё содержимое
@@ -134,7 +138,7 @@ public partial class BrightnessHudWindow : Window
         return canvas;
     }
 
-    private Line[] BuildRays(Canvas canvas, int count, double strokeThickness)
+    private Line[] BuildRays(Canvas canvas, int count, double strokeThickness, string strokeResourceKey)
     {
         var rays = new Line[count];
         for (var i = 0; i < count; i++)
@@ -144,7 +148,7 @@ public partial class BrightnessHudWindow : Window
                 StrokeThickness = strokeThickness,
                 StrokeLineCap = Avalonia.Media.PenLineCap.Round,
             };
-            ray.Bind(Shape.StrokeProperty, this.GetResourceObservable("AppAccentBrush"));
+            ray.Bind(Shape.StrokeProperty, this.GetResourceObservable(strokeResourceKey));
             canvas.Children.Add(ray);
             rays[i] = ray;
         }

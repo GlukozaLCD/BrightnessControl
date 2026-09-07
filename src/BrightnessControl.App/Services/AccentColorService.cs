@@ -42,6 +42,20 @@ public sealed class AccentColorService : IDisposable
         Apply();
     }
 
+    public void SetCustomAccentColor(string hex)
+    {
+        _appSettings.CustomAccentColorHex = hex;
+        _appSettingsStore.Save(_appSettings);
+        Apply();
+    }
+
+    public void SetColorHarmonyScheme(ColorHarmonyScheme scheme)
+    {
+        _appSettings.ColorHarmonySchemeId = scheme.ToString();
+        _appSettingsStore.Save(_appSettings);
+        Apply();
+    }
+
     private void OnUserPreferenceChanged(object? sender, UserPreferenceChangedEventArgs e)
     {
         if (e.Category is UserPreferenceCategory.General or UserPreferenceCategory.Color)
@@ -78,38 +92,62 @@ public sealed class AccentColorService : IDisposable
         _originalLightAccent ??= lightPalette.Accent;
         _originalDarkAccent ??= darkPalette.Accent;
 
+        Color primary;
+
         // Честная тема важнее вливания в систему в режиме высокой контрастности —
-        // не форсируем акцент поверх настроек accessibility пользователя.
+        // не форсируем акцент поверх настроек accessibility пользователя. В этой
+        // ветке (и когда переключатель выключен) раньше AppAccentBrush красился
+        // в чёрный (Colors.Black) — на тёмном фоне это делало акцентные элементы
+        // (полоска заголовка, рамка активного пункта списка) фактически
+        // невидимыми. FP13: используем свой акцентный цвет вместо чёрного.
         if (!_appSettings.UseWindowsAccentColor || IsHighContrastActive() || !TryGetWindowsAccentColor(out var accent))
         {
             lightPalette.Accent = _originalLightAccent.Value;
             darkPalette.Accent = _originalDarkAccent.Value;
-            SetAccentBrush(Colors.Black);
-            return;
+            primary = Color.TryParse(_appSettings.CustomAccentColorHex, out var custom) ? custom : Color.FromRgb(0x00, 0x78, 0xD4);
+        }
+        else
+        {
+            lightPalette.Accent = accent;
+            darkPalette.Accent = accent;
+            primary = accent;
         }
 
-        lightPalette.Accent = accent;
-        darkPalette.Accent = accent;
-        SetAccentBrush(accent);
+        ApplyAccentBrushes(primary);
     }
 
-    // Ресурс под собственным именем (не завязан на точные ключи Fluent-темы, в
-    // которых легко ошибиться) — используется явно там, где акцент должен быть
+    // Ресурсы под собственными именами (не завязаны на точные ключи Fluent-темы,
+    // в которых легко ошибиться) — используются явно там, где акцент должен быть
     // заметен сразу и без взаимодействия с контролами (например, рамка бокового
     // списка категорий в SettingsWindow), а не только на выделении/чекбоксах.
     //
     // AppAccentOnBrush (FP12) — контрастный цвет ТЕКСТА/ИКОНОК поверх акцентной
     // заливки (активный пункт навигации, залитая часть слайдера и т.п.). Акцент
-    // теперь динамический (из Windows или, позже, пользовательский — FP13), а не
-    // один зашитый оттенок, как в дизайн-макете, поэтому контраст вычисляется по
-    // яркости конкретного цвета, а не жёстко задан.
-    private static void SetAccentBrush(Color color)
+    // теперь динамический (из Windows или свой — FP13), а не один зашитый
+    // оттенок, как в дизайн-макете, поэтому контраст вычисляется по яркости
+    // конкретного цвета, а не жёстко задан.
+    //
+    // AppAccentSecondaryBrush (FP13) — вычисляется из основного акцента по
+    // выбранной пользователем схеме цветовой гармонии (ColorHarmony), с
+    // подстройкой светлоты под активную тему. Используется в единственном
+    // месте, где уже существует понятие "основной/дополнительный" — лучи
+    // HUD-солнца (BrightnessHudWindow, _secondaryRays).
+    private void ApplyAccentBrushes(Color primary)
     {
-        if (Application.Current is { } app)
+        if (Application.Current is not { } app)
         {
-            app.Resources["AppAccentBrush"] = new SolidColorBrush(color);
-            app.Resources["AppAccentOnBrush"] = new SolidColorBrush(GetContrastingTextColor(color));
+            return;
         }
+
+        var isDarkTheme = app.ActualThemeVariant == ThemeVariant.Dark;
+        var scheme = Enum.TryParse<ColorHarmonyScheme>(_appSettings.ColorHarmonySchemeId, out var parsedScheme)
+            ? parsedScheme
+            : ColorHarmonyScheme.Complementary;
+        var secondary = ColorHarmony.ComputeSecondary(primary, scheme, isDarkTheme);
+
+        app.Resources["AppAccentBrush"] = new SolidColorBrush(primary);
+        app.Resources["AppAccentOnBrush"] = new SolidColorBrush(GetContrastingTextColor(primary));
+        app.Resources["AppAccentSecondaryBrush"] = new SolidColorBrush(secondary);
     }
 
     private static Color GetContrastingTextColor(Color background)

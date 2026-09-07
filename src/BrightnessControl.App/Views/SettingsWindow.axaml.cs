@@ -616,6 +616,93 @@ public partial class SettingsWindow : Window
         return canvas;
     }
 
+    // FP13 — свой акцентный цвет, виден только пока чекбокс Windows-акцента
+    // снят (иначе базовый цвет и так берётся из системы, выбирать нечего).
+    // Переиспользует тот же ColorPickerWindow, что и свой цвет иконки трея
+    // (FP8) — только по подтверждению ("Изменить" → диалог → OK), не вживую
+    // по ходу перетаскивания слайдеров внутри пикера.
+    private Control BuildCustomAccentSection()
+    {
+        var panel = new StackPanel { Spacing = 8, Margin = new Thickness(0, 4, 0, 0) };
+
+        var initialColor = Avalonia.Media.Color.TryParse(_appSettings.CustomAccentColorHex, out var parsedInitial)
+            ? parsedInitial
+            : Avalonia.Media.Color.FromRgb(0x00, 0x78, 0xD4);
+
+        var swatch = new Border
+        {
+            Width = 28,
+            Height = 28,
+            CornerRadius = new CornerRadius(14),
+            BorderThickness = new Thickness(1),
+            Background = new Avalonia.Media.SolidColorBrush(initialColor),
+        };
+        swatch.Bind(Border.BorderBrushProperty, this.GetResourceObservable("AppLineStrong"));
+
+        var changeButton = new Button { Content = "Изменить" };
+        changeButton.Click += async (_, _) =>
+        {
+            _suppressDeactivateClose = true;
+            try
+            {
+                var picker = new ColorPickerWindow(_appSettings.CustomAccentColorHex);
+                await picker.ShowDialog(this);
+
+                if (picker.ResultHex is { } hex)
+                {
+                    swatch.Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse(hex));
+                    _accentColorService?.SetCustomAccentColor(hex);
+                }
+            }
+            finally
+            {
+                _suppressDeactivateClose = false;
+            }
+        };
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        row.Children.Add(new TextBlock { Text = "Свой акцентный цвет:", VerticalAlignment = VerticalAlignment.Center, Width = 180 });
+        row.Children.Add(swatch);
+        row.Children.Add(changeButton);
+        panel.Children.Add(row);
+
+        return panel;
+    }
+
+    private ComboBox BuildColorHarmonySelector()
+    {
+        var options = new (ColorHarmonyScheme Value, string Label)[]
+        {
+            (ColorHarmonyScheme.Complementary, "Дополняющая"),
+            (ColorHarmonyScheme.Analogous, "Аналогичная"),
+            (ColorHarmonyScheme.Triadic, "Триада"),
+        };
+
+        var current = Enum.TryParse<ColorHarmonyScheme>(_appSettings.ColorHarmonySchemeId, out var parsedScheme)
+            ? parsedScheme
+            : ColorHarmonyScheme.Complementary;
+
+        var comboBox = new ComboBox
+        {
+            ItemsSource = options.Select(o => o.Label).ToList(),
+            SelectedIndex = Array.FindIndex(options, o => o.Value == current),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            MinWidth = 160,
+        };
+
+        comboBox.SelectionChanged += (_, _) =>
+        {
+            if (comboBox.SelectedIndex < 0)
+            {
+                return;
+            }
+
+            _accentColorService?.SetColorHarmonyScheme(options[comboBox.SelectedIndex].Value);
+        };
+
+        return comboBox;
+    }
+
     private void BuildAppearanceTab(StackPanel root)
     {
         root.Children.Add(new TextBlock { Text = "Тема", FontWeight = Avalonia.Media.FontWeight.Bold });
@@ -624,8 +711,27 @@ public partial class SettingsWindow : Window
         root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
         var accentCheckBox = new CheckBox { Content = "Использовать акцентный цвет Windows", IsChecked = _appSettings.UseWindowsAccentColor };
         ToolTip.SetTip(accentCheckBox, "Подкрашивает выделение/акцентные элементы в цвет, который вы выбрали в Параметры Windows → Персонализация → Цвета, вместо стандартного синего.");
-        accentCheckBox.IsCheckedChanged += (_, _) => _accentColorService?.SetEnabled(accentCheckBox.IsChecked ?? true);
         root.Children.Add(accentCheckBox);
+
+        // Комбинация — ВСЕГДА видна (действует независимо от того, откуда взят
+        // основной цвет, из Windows или свой), а свой базовый цвет — только
+        // пока Windows-акцент выключен (FP13).
+        var colorHarmonyRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        colorHarmonyRow.Children.Add(new TextBlock { Text = "Цветовая комбинация:", VerticalAlignment = VerticalAlignment.Center, Width = 180 });
+        colorHarmonyRow.Children.Add(BuildColorHarmonySelector());
+        ToolTip.SetTip(colorHarmonyRow, "Дополнительные акцентные элементы (например, вторые лучи HUD-солнца) получают цвет, вычисленный из основного акцента по этому правилу.");
+        root.Children.Add(colorHarmonyRow);
+
+        var customAccentSection = BuildCustomAccentSection();
+        customAccentSection.IsVisible = !(accentCheckBox.IsChecked ?? true);
+        root.Children.Add(customAccentSection);
+
+        accentCheckBox.IsCheckedChanged += (_, _) =>
+        {
+            var enabled = accentCheckBox.IsChecked ?? true;
+            _accentColorService?.SetEnabled(enabled);
+            customAccentSection.IsVisible = !enabled;
+        };
 
         root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
         root.Children.Add(new TextBlock { Text = "HUD с процентом", FontWeight = Avalonia.Media.FontWeight.Bold });
