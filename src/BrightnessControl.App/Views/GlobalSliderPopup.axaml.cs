@@ -92,7 +92,7 @@ public partial class GlobalSliderPopup : Window
         {
             _monitorSlidersPopup?.SetAllSliders(percent);
             _globalApplier.Request(percent);
-        }, nameColumnWidth);
+        }, nameColumnWidth, allowForceResync: true);
 
         expandButton.Click += (_, _) => ToggleMonitorSliders();
     }

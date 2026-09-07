@@ -2017,14 +2017,14 @@ public partial class SettingsWindow : Window
     // nameColumnWidth — под длинные названия мониторов в узком поповере название
     // едет "бегущей строкой", а не обрезается; в широком окне настроек места и так
     // хватает, поэтому запас пошире и анимация практически никогда не включается.
-    internal static Slider AddSliderRow(StackPanel root, string label, int initialPercent, int tickStep, Action<int> onChanged, double nameColumnWidth = 360)
-        => AddSliderRow(root, BuildMarqueeLabel(label, nameColumnWidth), initialPercent, tickStep, onChanged);
+    internal static Slider AddSliderRow(StackPanel root, string label, int initialPercent, int tickStep, Action<int> onChanged, double nameColumnWidth = 360, bool allowForceResync = false)
+        => AddSliderRow(root, BuildMarqueeLabel(label, nameColumnWidth), initialPercent, tickStep, onChanged, allowForceResync);
 
     // Перегрузка, принимающая уже готовый control вместо голой строки — нужна
     // MonitorSlidersPopup (FP8/переименование мониторов), где название должно быть
     // кликабельным (переключается в поле ввода) и нести маленькую иконку пера, а
     // не просто быть бегущей строкой без взаимодействия.
-    internal static Slider AddSliderRow(StackPanel root, Control nameLabel, int initialPercent, int tickStep, Action<int> onChanged)
+    internal static Slider AddSliderRow(StackPanel root, Control nameLabel, int initialPercent, int tickStep, Action<int> onChanged, bool allowForceResync = false)
     {
         var headerRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         // Ширина ФИКСИРОВАНА (не по содержимому) — иначе "Auto"-колонка меняла размер
@@ -2035,6 +2035,24 @@ public partial class SettingsWindow : Window
         Grid.SetColumn(percentLabel, 1);
         headerRow.Children.Add(nameLabel);
         headerRow.Children.Add(percentLabel);
+
+        // FP15 — клик по проценту принудительно ПЕРЕОТПРАВЛЯЕТ ТЕКУЩЕЕ
+        // значение на все мониторы, без изменения самого числа: тот же
+        // эффект, что раньше пользователь получал вручную через "−1", потом
+        // "+1" (значение визуально не меняется, но в железо уходит новая
+        // команда) — нужно, если какой-то монитор физически "разъехался" со
+        // значением, которое помнит слайдер (например, яркость подкрутили
+        // прямо на самом мониторе кнопками). Это НЕ поле ввода — просто
+        // повторный вызов onChanged с уже текущим значением. Пользователь
+        // явно попросил ТОЛЬКО для глобального слайдера ("Все мониторы" в
+        // GlobalSliderPopup), не для слайдеров по отдельным мониторам —
+        // отсюда параметр allowForceResync, а не безусловно для всех
+        // вызовов AddSliderRow.
+        if (allowForceResync)
+        {
+            percentLabel.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand);
+            ToolTip.SetTip(percentLabel, "Нажмите, чтобы заново применить это значение ко всем мониторам");
+        }
 
         var slider = new Slider
         {
@@ -2197,6 +2215,47 @@ public partial class SettingsWindow : Window
             UpdateBubbleVisibility();
         }, handledEventsToo: true);
 
+        if (allowForceResync)
+        {
+            percentLabel.AddHandler(InputElement.PointerPressedEvent, (_, e) =>
+            {
+                e.Handled = true;
+                onChanged((int)slider.Value);
+            }, handledEventsToo: true);
+        }
+
+        // FP15 — колесо мыши над строкой слайдера меняет значение, по
+        // аналогии со скроллом над иконкой трея (FP2). Шаг — tickStep (тот
+        // же параметр, что уже используется для прилипания при
+        // перетаскивании, отдельной настройки не заводили). Shift — точная
+        // подстройка ±1% в обход шага (та же идея, что и в
+        // BuildScrollableTwoDigit для формы расписания, хотя там у Shift
+        // обратный смысл — здесь именно так решил пользователь). Пишем в
+        // slider.Value, а не напрямую вызываем onChanged — тогда срабатывает
+        // тот же PropertyChanged-обработчик выше (раз isDragging=false,
+        // onChanged вызовется сразу на каждый тик), без дублирования кода
+        // применения; коалесцирование в железо — забота вызывающей стороны
+        // (GlobalSliderPopup/MonitorSlidersPopup уже оборачивают onChanged в
+        // CoalescingBrightnessApplier, как и скролл над иконкой трея).
+        //
+        // Обработчик висит НЕ на самом слайдере, а на широкой обёртке ВСЕЙ
+        // строки (подпись+процент сверху, минус/слайдер/плюс снизу) — сам
+        // визуальный трек слайдера слишком тонкий, пользователю было трудно
+        // "попасть" в него курсором именно для скролла (найдено по живому
+        // фидбеку: "мышка не считается над активной областью").
+        void HandleWheel(object? sender, PointerWheelEventArgs e)
+        {
+            e.Handled = true;
+            var notches = Math.Sign(e.Delta.Y);
+            if (notches == 0)
+            {
+                return;
+            }
+
+            var step = e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? 1 : tickStep;
+            slider.Value = Math.Clamp(slider.Value + notches * step, slider.Minimum, slider.Maximum);
+        }
+
         // Padding=0 — общий Button ControlTheme (FP12) задаёт Padding="14,8" для
         // обычных текстовых кнопок ("Сохранить" и т.п.); при ширине всего 32px
         // это почти не оставляет места самому символу "−"/"+", и он выглядит
@@ -2234,8 +2293,18 @@ public partial class SettingsWindow : Window
         sliderHost.Children.Add(row);
         sliderHost.Children.Add(bubble);
 
-        root.Children.Add(headerRow);
-        root.Children.Add(sliderHost);
+        var rowContainer = new StackPanel();
+        rowContainer.Children.Add(headerRow);
+        rowContainer.Children.Add(sliderHost);
+        // StackPanel без явного Background не участвует в хит-тесте за
+        // пределами своих детей (та же история, что уже чинили для кнопки
+        // "+" — Border/Panel без Background не ловит клики/скролл в
+        // "пустых" промежутках между children), поэтому без этого колесо
+        // между headerRow и sliderHost попросту не долетало бы до обработчика.
+        rowContainer.Background = Avalonia.Media.Brushes.Transparent;
+        rowContainer.AddHandler(InputElement.PointerWheelChangedEvent, HandleWheel, handledEventsToo: true);
+
+        root.Children.Add(rowContainer);
         return slider;
     }
 
