@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Controls.Shapes;
 using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Layout;
@@ -563,6 +564,58 @@ public partial class SettingsWindow : Window
         root.Children.Add(addButton);
     }
 
+    // FP12 Фаза 4, п.8 — "+"/"×" рисуются векторной геометрией (Line), а не
+    // TextBlock: TextBlock центрирует текст по LINE BOX шрифта (полная высота
+    // ascent+descent), а не по фактическим закрашенным пикселям конкретного
+    // глифа — у символов "+"/"×" реальная "чернильная" область заметно уже и
+    // расположена не строго по центру line box, из-за чего центрирование по
+    // умолчанию давало видимое смещение влево-вниз. Линии центрируются по
+    // РЕАЛЬНОЙ геометрии фигуры, поэтому не "плавают" в зависимости от шрифта.
+    private static Control BuildPlusGlyph(double size, double thickness, Avalonia.Media.IBrush stroke)
+    {
+        var half = size / 2;
+        var canvas = new Canvas { Width = size, Height = size, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        canvas.Children.Add(new Line
+        {
+            StartPoint = new Point(half, 0),
+            EndPoint = new Point(half, size),
+            Stroke = stroke,
+            StrokeThickness = thickness,
+            StrokeLineCap = Avalonia.Media.PenLineCap.Round,
+        });
+        canvas.Children.Add(new Line
+        {
+            StartPoint = new Point(0, half),
+            EndPoint = new Point(size, half),
+            Stroke = stroke,
+            StrokeThickness = thickness,
+            StrokeLineCap = Avalonia.Media.PenLineCap.Round,
+        });
+        return canvas;
+    }
+
+    private static Control BuildCrossGlyph(double size, double thickness, Avalonia.Media.IBrush stroke)
+    {
+        var canvas = new Canvas { Width = size, Height = size, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        canvas.Children.Add(new Line
+        {
+            StartPoint = new Point(0, 0),
+            EndPoint = new Point(size, size),
+            Stroke = stroke,
+            StrokeThickness = thickness,
+            StrokeLineCap = Avalonia.Media.PenLineCap.Round,
+        });
+        canvas.Children.Add(new Line
+        {
+            StartPoint = new Point(size, 0),
+            EndPoint = new Point(0, size),
+            Stroke = stroke,
+            StrokeThickness = thickness,
+            StrokeLineCap = Avalonia.Media.PenLineCap.Round,
+        });
+        return canvas;
+    }
+
     private void BuildAppearanceTab(StackPanel root)
     {
         root.Children.Add(new TextBlock { Text = "Тема", FontWeight = Avalonia.Media.FontWeight.Bold });
@@ -987,14 +1040,7 @@ public partial class SettingsWindow : Window
                     VerticalAlignment = VerticalAlignment.Top,
                     Margin = new Thickness(0, -3, -3, 0),
                     Cursor = handCursor,
-                    Child = new TextBlock
-                    {
-                        Text = "×",
-                        FontSize = 9,
-                        Foreground = Avalonia.Media.Brushes.White,
-                        HorizontalAlignment = HorizontalAlignment.Center,
-                        VerticalAlignment = VerticalAlignment.Center,
-                    },
+                    Child = BuildCrossGlyph(7, 1.4, Avalonia.Media.Brushes.White),
                 };
                 removeGlyph.PointerPressed += (_, e) =>
                 {
@@ -1036,13 +1082,7 @@ public partial class SettingsWindow : Window
                 BorderBrush = neutralBorderBrush,
                 Cursor = handCursor,
                 Margin = new Thickness(0, 0, 4, 4),
-                Child = new TextBlock
-                {
-                    Text = "+",
-                    FontSize = 14,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    VerticalAlignment = VerticalAlignment.Center,
-                },
+                Child = BuildPlusGlyph(14, 2, mutedBrush),
             };
             ToolTip.SetTip(addButton, "Добавить свой цвет");
             addButton.PointerPressed += async (_, _) =>
