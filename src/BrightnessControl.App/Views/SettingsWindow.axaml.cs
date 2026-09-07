@@ -27,6 +27,10 @@ public partial class SettingsWindow : Window
     private readonly TrayService? _trayService;
     private readonly Action _onExitRequested;
 
+    // FP13 — единственный экземпляр окна предпросмотра темы: повторный клик
+    // на кнопку должен активировать уже открытое окно, а не плодить дубликаты.
+    private ThemePreviewWindow? _themePreviewWindow;
+
     // Двухуровневая навигация (FP9 Фаза 3): _selectedCategory == null — показан
     // список категорий верхнего уровня; иначе — подкатегории ВЫБРАННОЙ категории
     // (список целиком подменяется, а не разворачивается на месте — решено заранее).
@@ -87,9 +91,15 @@ public partial class SettingsWindow : Window
         // (см. ColorPickerWindow) — иначе открытие диалога само по себе забирает
         // фокус ОС у этого окна, оно считается "деактивированным" и тут же
         // закрывается, из-за чего казалось, что всё приложение исчезает.
+        //
+        // _themePreviewWindow (FP13) — та же проблема, но окно НЕМОДАЛЬНОЕ и
+        // должно жить долго (пока пользователь крутит настройки рядом), а не
+        // на краткий момент одного диалога, поэтому проверяется отдельно, а не
+        // через _suppressDeactivateClose (тот включается/выключается только
+        // вокруг Show/ShowDialog конкретного вызова).
         Deactivated += (_, _) =>
         {
-            if (!_suppressDeactivateClose)
+            if (!_suppressDeactivateClose && _themePreviewWindow is null)
             {
                 Close();
             }
@@ -384,8 +394,28 @@ public partial class SettingsWindow : Window
         else
         {
             row.Background = Avalonia.Media.Brushes.Transparent;
-            row.PointerEntered += (_, _) => row.Bind(Border.BackgroundProperty, this.GetResourceObservable("AppSurfaceHover"));
-            row.PointerExited += (_, _) => row.Background = Avalonia.Media.Brushes.Transparent;
+            // FP13: приглушённый акцентный тинт вместо нейтрального
+            // AppSurfaceHover — та же роль (AppAccentBackgroundBrush), что и
+            // у фона карточки Compact Bar (BrightnessHudWindow), для единого
+            // ощущения "это подсвечено акцентом", а не просто "это серее".
+            //
+            // ВАЖНО: Bind() создаёт ЖИВУЮ подписку на ресурс — раньше (когда
+            // цвет наведения был статичным AppSurfaceHover) её не отключали,
+            // это было безобидно. Теперь AppAccentBackgroundBrush меняется
+            // при переключении настроек акцента (SwapAccentRoles, чекбокс
+            // Windows-акцента и т.п.) — если не отключить старую подписку
+            // явно, она продолжает жить и переписывает Background обратно на
+            // акцентный тон при следующей смене ресурса, ДАЖЕ ЕСЛИ курсор уже
+            // давно ушёл с этого пункта (сложный баг, найденный пользователем:
+            // "навигация по категориям, потом переключение акцента").
+            IDisposable? hoverBinding = null;
+            row.PointerEntered += (_, _) => hoverBinding = row.Bind(Border.BackgroundProperty, this.GetResourceObservable("AppAccentBackgroundBrush"));
+            row.PointerExited += (_, _) =>
+            {
+                hoverBinding?.Dispose();
+                hoverBinding = null;
+                row.Background = Avalonia.Media.Brushes.Transparent;
+            };
         }
 
         row.PointerPressed += (_, _) => onClick();
@@ -673,14 +703,15 @@ public partial class SettingsWindow : Window
     {
         var options = new (ColorHarmonyScheme Value, string Label)[]
         {
-            (ColorHarmonyScheme.Complementary, "Дополняющая"),
-            (ColorHarmonyScheme.Analogous, "Аналогичная"),
-            (ColorHarmonyScheme.Triadic, "Триада"),
+            (ColorHarmonyScheme.Monochromatic, "Монохромная"),
+            (ColorHarmonyScheme.AnalogousClose, "Соседняя, узкая"),
+            (ColorHarmonyScheme.Analogous, "Соседняя"),
+            (ColorHarmonyScheme.AnalogousWide, "Соседняя, широкая"),
         };
 
         var current = Enum.TryParse<ColorHarmonyScheme>(_appSettings.ColorHarmonySchemeId, out var parsedScheme)
             ? parsedScheme
-            : ColorHarmonyScheme.Complementary;
+            : ColorHarmonyScheme.Analogous;
 
         var comboBox = new ComboBox
         {
@@ -701,6 +732,24 @@ public partial class SettingsWindow : Window
         };
 
         return comboBox;
+    }
+
+    // FP13 — открывает окно предпросмотра темы НЕМОДАЛЬНО (Show, не
+    // ShowDialog), рядом с SettingsWindow: пользователь должен иметь
+    // возможность крутить слайдеры/комбобоксы настроек и сразу видеть эффект
+    // в предпросмотре, не закрывая ни то, ни другое окно. Повторный клик на
+    // кнопку активирует уже открытое окно вместо создания дубликата.
+    private void OpenThemePreview()
+    {
+        if (_themePreviewWindow is not null)
+        {
+            _themePreviewWindow.Activate();
+            return;
+        }
+
+        _themePreviewWindow = new ThemePreviewWindow();
+        _themePreviewWindow.Closed += (_, _) => _themePreviewWindow = null;
+        _themePreviewWindow.Show(this);
     }
 
     private void BuildAppearanceTab(StackPanel root)
@@ -732,6 +781,16 @@ public partial class SettingsWindow : Window
             _accentColorService?.SetEnabled(enabled);
             customAccentSection.IsVisible = !enabled;
         };
+
+        var swapRolesCheckBox = new CheckBox { Content = "Поменять акцент и противоположный цвет местами", IsChecked = _appSettings.SwapAccentRoles };
+        ToolTip.SetTip(swapRolesCheckBox, "Тот же набор вычисленных цветов — меняется только, какой из них применяется как основной акцент по всему приложению, а какой как противоположный.");
+        swapRolesCheckBox.IsCheckedChanged += (_, _) => _accentColorService?.SetSwapAccentRoles(swapRolesCheckBox.IsChecked ?? false);
+        root.Children.Add(swapRolesCheckBox);
+
+        var previewButton = new Button { Content = "Открыть предпросмотр темы", Margin = new Thickness(0, 4, 0, 0) };
+        ToolTip.SetTip(previewButton, "Отдельное немодальное окошко со сводкой элементов интерфейса — удобно держать открытым рядом с настройками для быстрой оценки сочетания цветов.");
+        previewButton.Click += (_, _) => OpenThemePreview();
+        root.Children.Add(previewButton);
 
         root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
         root.Children.Add(new TextBlock { Text = "HUD с процентом", FontWeight = Avalonia.Media.FontWeight.Bold });

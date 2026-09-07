@@ -113,12 +113,12 @@ public partial class BrightnessHudWindow : Window
         Canvas.SetTop(disc, SunCenter - DiscRadius);
         canvas.Children.Add(disc);
 
-        // Вторичные лучи (FP13) красятся отдельным AppAccentSecondaryBrush —
+        // Вторичные лучи (FP13) красятся отдельным AppAccentOppositeBrush —
         // вычисляется из основного акцента по цветовой гармонии
         // (AccentColorService/ColorHarmony), а не тем же самым цветом, что и
         // диск/основные лучи.
         primaryRays = BuildRays(canvas, PrimaryAnglesDeg.Length, PrimaryStrokeThickness, "AppAccentBrush");
-        secondaryRays = BuildRays(canvas, SecondaryAnglesDeg.Length, SecondaryStrokeThickness, "AppAccentSecondaryBrush");
+        secondaryRays = BuildRays(canvas, SecondaryAnglesDeg.Length, SecondaryStrokeThickness, "AppAccentOppositeBrush");
 
         // Число яркости — ЦИФРАМИ БЕЗ "%" (см. Фазу 3), поверх диска. Без
         // явных Width/Height — TextBlock не центрирует своё содержимое
@@ -216,7 +216,14 @@ public partial class BrightnessHudWindow : Window
             Height = 10,
             CornerRadius = new CornerRadius(5),
         };
-        track.Bind(Border.BackgroundProperty, this.GetResourceObservable("AppSurfaceSunken"));
+        // FP13: незалитая часть шкалы — приглушённый акцентный тинт
+        // (AppAccentBackgroundVariantBrush, специально приглушён по
+        // насыщенности под фоновые поверхности), а не нейтральный серый —
+        // тонкая привязка к выбранной комбинации даже там, где элемент
+        // формально "пустой"/неактивный. Насыщенный AppAccentOppositeBrush
+        // сюда не подходит — он рассчитан на яркие акценты переднего плана
+        // (лучи HUD-солнца), а не на спокойный фоновый элемент.
+        track.Bind(Border.BackgroundProperty, this.GetResourceObservable("AppAccentBackgroundVariantBrush"));
 
         fill = new Border
         {
@@ -267,7 +274,11 @@ public partial class BrightnessHudWindow : Window
             CornerRadius = new CornerRadius(16),
             BorderThickness = new Thickness(1),
         };
-        card.Bind(Border.BackgroundProperty, this.GetResourceObservable("AppSurface"));
+        // FP13: карточка получает приглушённый акцентный тинт вместо
+        // нейтрального AppSurface — Compact Bar и Pill Toast намеренно берут
+        // РАЗНЫЕ тона одной фоновой пары (Background/BackgroundVariant), а не
+        // один и тот же, чтобы стили визуально отличались друг от друга.
+        card.Bind(Border.BackgroundProperty, this.GetResourceObservable("AppAccentBackgroundBrush"));
         card.Bind(Border.BorderBrushProperty, this.GetResourceObservable("AppLineStrong"));
 
         return card;
@@ -299,7 +310,10 @@ public partial class BrightnessHudWindow : Window
             CornerRadius = new CornerRadius(24),
             BorderThickness = new Thickness(1),
         };
-        card.Bind(Border.BackgroundProperty, this.GetResourceObservable("AppSurface"));
+        // FP13: второй тон той же фоновой пары, что и у Compact Bar (см.
+        // BuildCompactBar) — намеренно другой, а не AppAccentBackgroundBrush,
+        // чтобы стили визуально отличались.
+        card.Bind(Border.BackgroundProperty, this.GetResourceObservable("AppAccentBackgroundVariantBrush"));
         card.Bind(Border.BorderBrushProperty, this.GetResourceObservable("AppLineStrong"));
 
         return card;

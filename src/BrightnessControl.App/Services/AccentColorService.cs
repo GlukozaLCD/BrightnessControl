@@ -56,6 +56,13 @@ public sealed class AccentColorService : IDisposable
         Apply();
     }
 
+    public void SetSwapAccentRoles(bool swap)
+    {
+        _appSettings.SwapAccentRoles = swap;
+        _appSettingsStore.Save(_appSettings);
+        Apply();
+    }
+
     private void OnUserPreferenceChanged(object? sender, UserPreferenceChangedEventArgs e)
     {
         if (e.Category is UserPreferenceCategory.General or UserPreferenceCategory.Color)
@@ -127,11 +134,16 @@ public sealed class AccentColorService : IDisposable
     // оттенок, как в дизайн-макете, поэтому контраст вычисляется по яркости
     // конкретного цвета, а не жёстко задан.
     //
-    // AppAccentSecondaryBrush (FP13) — вычисляется из основного акцента по
-    // выбранной пользователем схеме цветовой гармонии (ColorHarmony), с
-    // подстройкой светлоты под активную тему. Используется в единственном
-    // месте, где уже существует понятие "основной/дополнительный" — лучи
-    // HUD-солнца (BrightnessHudWindow, _secondaryRays).
+    // FP13 — три пары "тон + его вариант" вычисляются из основного акцента по
+    // выбранной пользователем схеме цветовой гармонии
+    // (ColorHarmony.ComputePalette): Accent/AccentVariant (тот же цвет,
+    // другая светлота), Opposite/OppositeVariant (сдвиг оттенка по схеме, та
+    // же пара "тон+вариант"), AccentBackground/AccentBackgroundVariant
+    // (приглушённый тинт акцента для фоновых поверхностей). Пока в реальном
+    // UI задействован только AppAccentOppositeBrush (лучи HUD-солнца,
+    // BrightnessHudWindow._secondaryRays) — остальные видны в
+    // ThemePreviewWindow для оценки схемы, но ещё не привязаны к другим
+    // конкретным элементам интерфейса (решается отдельным заходом).
     private void ApplyAccentBrushes(Color primary)
     {
         if (Application.Current is not { } app)
@@ -142,12 +154,26 @@ public sealed class AccentColorService : IDisposable
         var isDarkTheme = app.ActualThemeVariant == ThemeVariant.Dark;
         var scheme = Enum.TryParse<ColorHarmonyScheme>(_appSettings.ColorHarmonySchemeId, out var parsedScheme)
             ? parsedScheme
-            : ColorHarmonyScheme.Complementary;
-        var secondary = ColorHarmony.ComputeSecondary(primary, scheme, isDarkTheme);
+            : ColorHarmonyScheme.Analogous;
+        var palette = ColorHarmony.ComputePalette(primary, scheme, isDarkTheme);
 
-        app.Resources["AppAccentBrush"] = new SolidColorBrush(primary);
-        app.Resources["AppAccentOnBrush"] = new SolidColorBrush(GetContrastingTextColor(primary));
-        app.Resources["AppAccentSecondaryBrush"] = new SolidColorBrush(secondary);
+        // Набор вычисленных цветов не меняется от SwapAccentRoles — меняется
+        // только, какая пара считается "основной" (применяется по всему
+        // приложению) и какая "противоположной" (сейчас — только доп. лучи
+        // HUD-солнца). Фоновая пара (AccentBackground/Variant) роль не
+        // меняет — она привязана к самому базовому цвету, а не к тому, какая
+        // из пар сейчас считается "основной".
+        var (accentColor, accentVariantColor, oppositeColor, oppositeVariantColor) = _appSettings.SwapAccentRoles
+            ? (palette.Opposite, palette.OppositeVariant, primary, palette.AccentVariant)
+            : (primary, palette.AccentVariant, palette.Opposite, palette.OppositeVariant);
+
+        app.Resources["AppAccentBrush"] = new SolidColorBrush(accentColor);
+        app.Resources["AppAccentOnBrush"] = new SolidColorBrush(GetContrastingTextColor(accentColor));
+        app.Resources["AppAccentVariantBrush"] = new SolidColorBrush(accentVariantColor);
+        app.Resources["AppAccentOppositeBrush"] = new SolidColorBrush(oppositeColor);
+        app.Resources["AppAccentOppositeVariantBrush"] = new SolidColorBrush(oppositeVariantColor);
+        app.Resources["AppAccentBackgroundBrush"] = new SolidColorBrush(palette.AccentBackground);
+        app.Resources["AppAccentBackgroundVariantBrush"] = new SolidColorBrush(palette.AccentBackgroundVariant);
     }
 
     private static Color GetContrastingTextColor(Color background)

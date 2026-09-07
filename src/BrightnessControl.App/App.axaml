@@ -90,6 +90,13 @@
                     <Setter Property="Background" Value="{DynamicResource AppAccentBrush}" />
                     <Setter Property="BorderBrush" Value="{DynamicResource AppAccentBrush}" />
                 </Style>
+                <!-- FP13: наведение на уже включённый тумблер — второй тон
+                     того же акцента (AppAccentVariantBrush), а не тот же
+                     самый цвет без изменений — лёгкая обратная связь. -->
+                <Style Selector="^:checked:pointerover /template/ Border#PART_Track">
+                    <Setter Property="Background" Value="{DynamicResource AppAccentVariantBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource AppAccentVariantBrush}" />
+                </Style>
                 <Style Selector="^:checked /template/ Border#PART_Thumb">
                     <Setter Property="Background" Value="{DynamicResource AppAccentOnBrush}" />
                     <Setter Property="HorizontalAlignment" Value="Right" />
@@ -119,6 +126,12 @@
                                 CornerRadius="{TemplateBinding CornerRadius}" />
                     </ControlTemplate>
                 </Setter>
+                <!-- FP13: наведение на бегунок слайдера — второй тон того же
+                     акцента вместо неизменного BorderBrush (изначально
+                     AppAccentBrush, задаётся прямо в разметке Slider ниже). -->
+                <Style Selector="^:pointerover">
+                    <Setter Property="BorderBrush" Value="{DynamicResource AppAccentVariantBrush}" />
+                </Style>
             </ControlTheme>
 
             <ControlTheme x:Key="{x:Type Slider}" TargetType="Slider">

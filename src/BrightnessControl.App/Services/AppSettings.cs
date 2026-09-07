@@ -33,5 +33,13 @@ public sealed class AppSettings
     // ColorHarmony) — строка, а не голый enum, по той же схеме
     // расширяемости, что и TrayIconDesignId/HudStyleId. Действует всегда,
     // независимо от источника основного цвета (Windows или свой).
-    public string ColorHarmonySchemeId { get; set; } = ColorHarmonyScheme.Complementary.ToString();
+    public string ColorHarmonySchemeId { get; set; } = ColorHarmonyScheme.Analogous.ToString();
+
+    // FP13: набор вычисленных цветов не меняется — меняется только, КУДА они
+    // применяются. При включении пара "основной/тон 2" и пара
+    // "противоположный/тон 2" меняются местами по всему приложению (то, что
+    // раньше было "основным акцентом" на кнопках/навигации, становится
+    // "противоположным" — сейчас видно только на доп. лучах HUD-солнца — и
+    // наоборот).
+    public bool SwapAccentRoles { get; set; }
 }
