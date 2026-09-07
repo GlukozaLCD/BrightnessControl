@@ -31,6 +31,7 @@ public partial class SettingsWindow : Window
     // (список целиком подменяется, а не разворачивается на месте — решено заранее).
     private List<NavCategory> _rootCategories = new();
     private NavCategory? _selectedCategory;
+    private NavSubcategory? _selectedSubcategory;
     private bool _navOnRight = true;
 
     private sealed record NavCategory(string Title, List<NavSubcategory> Subcategories);
@@ -232,8 +233,27 @@ public partial class SettingsWindow : Window
         };
 
         SetupNavFlip();
-        RenderNavList();
+        SetupContentPanelBlur();
         SelectSubcategory(_rootCategories[0].Subcategories[0]);
+    }
+
+    // Клик по совсем пустому месту вкладки (не по конкретному контролу) сам по
+    // себе никуда фокус не переводит — Avalonia не "уводит в никуда" фокус с
+    // текстового поля просто потому, что кликнули мимо. e.Source сравнивается
+    // именно с самим ContentPanel — событие доходит и от кликов по дочерним
+    // Border/TextBlock (у них своих обработчиков нет), но у них e.Source будет
+    // ЭТОТ дочерний элемент, а не панель, так что реальные ряды настроек клик
+    // не перехватывают.
+    private void SetupContentPanelBlur()
+    {
+        var contentPanel = this.FindControl<StackPanel>("ContentPanel")!;
+        contentPanel.PointerPressed += (_, e) =>
+        {
+            if (ReferenceEquals(e.Source, contentPanel))
+            {
+                contentPanel.Focus();
+            }
+        };
     }
 
     // Кнопка сверху списка перекидывает сам список категорий между правым и левым
@@ -306,53 +326,139 @@ public partial class SettingsWindow : Window
         {
             foreach (var category in _rootCategories)
             {
-                var button = new Button
-                {
-                    Content = category.Title,
-                    HorizontalAlignment = HorizontalAlignment.Stretch,
-                    HorizontalContentAlignment = HorizontalAlignment.Left,
-                };
-                button.Click += (_, _) =>
+                navList.Children.Add(BuildNavRow(category.Title, isActive: false, () =>
                 {
                     _selectedCategory = category;
-                    RenderNavList();
                     SelectSubcategory(category.Subcategories[0]);
-                };
-                navList.Children.Add(button);
+                }));
             }
 
             return;
         }
 
-        var backButton = new Button
-        {
-            Content = "← Назад",
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            HorizontalContentAlignment = HorizontalAlignment.Left,
-        };
-        backButton.Click += (_, _) =>
+        navList.Children.Add(BuildNavRow("← Назад", isActive: false, () =>
         {
             _selectedCategory = null;
             RenderNavList();
-        };
-        navList.Children.Add(backButton);
+        }));
         navList.Children.Add(new Separator { Margin = new Thickness(0, 4, 0, 4) });
 
         foreach (var subcategory in _selectedCategory.Subcategories)
         {
-            var button = new Button
-            {
-                Content = subcategory.Title,
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                HorizontalContentAlignment = HorizontalAlignment.Left,
-            };
-            button.Click += (_, _) => SelectSubcategory(subcategory);
-            navList.Children.Add(button);
+            var isActive = ReferenceEquals(subcategory, _selectedSubcategory);
+            navList.Children.Add(BuildNavRow(subcategory.Title, isActive, () => SelectSubcategory(subcategory)));
         }
+    }
+
+    // Пункт списка навигации — Border+TextBlock вместо Button: список категорий
+    // должен читаться именно как СПИСОК с одним акцентно закрашенным на всю
+    // строку активным пунктом (см. референс Volumey settings panel), а не как
+    // набор одинаковых кнопок без разницы между активным/неактивным состоянием
+    // (FP12, "непонятно куда ты заходишь"). Цвета — через GetResourceObservable,
+    // а не разовый снимок ресурса, чтобы подсветка не "залипала" на старом
+    // акцентном цвете при live-смене акцента Windows.
+    private Border BuildNavRow(string title, bool isActive, Action onClick)
+    {
+        var text = new TextBlock
+        {
+            Text = title,
+            VerticalAlignment = VerticalAlignment.Center,
+            FontWeight = isActive ? Avalonia.Media.FontWeight.SemiBold : Avalonia.Media.FontWeight.Normal,
+        };
+        text.Bind(TextBlock.ForegroundProperty, this.GetResourceObservable(isActive ? "AppAccentOnBrush" : "AppInk"));
+
+        var row = new Border
+        {
+            Child = text,
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(14, 10),
+            Cursor = new Cursor(StandardCursorType.Hand),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+
+        if (isActive)
+        {
+            row.Bind(Border.BackgroundProperty, this.GetResourceObservable("AppAccentBrush"));
+        }
+        else
+        {
+            row.Background = Avalonia.Media.Brushes.Transparent;
+            row.PointerEntered += (_, _) => row.Bind(Border.BackgroundProperty, this.GetResourceObservable("AppSurfaceHover"));
+            row.PointerExited += (_, _) => row.Background = Avalonia.Media.Brushes.Transparent;
+        }
+
+        row.PointerPressed += (_, _) => onClick();
+
+        return row;
+    }
+
+    // Единица измерения встроена как InnerRightContent, а НЕ через литерал в
+    // FormatString ("0 'мин'") — тот подход смешивал единицу с редактируемым
+    // текстом самого поля: пользователь мог случайно стереть/повредить "мин"
+    // при ручном вводе, и это же ломало commit по Enter/клику мимо поля
+    // (парсинг спотыкался о оставшиеся обрывки суффикса). InnerRightContent —
+    // отдельный визуальный элемент внутри рамки, не участвующий в
+    // редактируемом Text/Value вообще, поэтому не мешает ни вводу, ни commit.
+    private NumericUpDown BuildNumericStepper(decimal minimum, decimal maximum, decimal value, string unit)
+    {
+        var suffix = new TextBlock
+        {
+            Text = unit,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0),
+        };
+        suffix.Bind(TextBlock.ForegroundProperty, this.GetResourceObservable("AppMuted"));
+
+        var stepper = new NumericUpDown
+        {
+            Minimum = minimum,
+            Maximum = maximum,
+            Value = value,
+            Width = 150,
+            FormatString = "0",
+            InnerRightContent = suffix,
+        };
+
+        // Встроенный коммит текста у NumericUpDown ненадёжен (ни Enter, ни клик
+        // мимо поля не применяли набранное значение на практике) — коммитим
+        // вручную: парсим Text и выставляем Value сами. Невалидный текст (или
+        // пустое поле) откатывается обратно к текущему Value, а не оставляет
+        // "битую" строку в поле.
+        void CommitText()
+        {
+            if (decimal.TryParse(stepper.Text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.CurrentCulture, out var parsed))
+            {
+                stepper.Value = Math.Clamp(parsed, stepper.Minimum, stepper.Maximum);
+            }
+            else
+            {
+                stepper.Text = stepper.Value?.ToString("0", System.Globalization.CultureInfo.CurrentCulture);
+            }
+        }
+
+        stepper.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter)
+            {
+                CommitText();
+                // Window как цель фокуса не подходит (фокус реально не уходит
+                // с текстового поля — курсор-каретка и выделение остаются на
+                // месте). ContentPanel сделан Focusable в XAML специально под
+                // это — реальная фокусируемая, но не текстовая цель.
+                this.FindControl<StackPanel>("ContentPanel")?.Focus();
+                e.Handled = true;
+            }
+        };
+        stepper.LostFocus += (_, _) => CommitText();
+
+        return stepper;
     }
 
     private void SelectSubcategory(NavSubcategory subcategory)
     {
+        _selectedSubcategory = subcategory;
+        RenderNavList();
+
         var contentPanel = this.FindControl<StackPanel>("ContentPanel")!;
         contentPanel.Children.Clear();
         subcategory.BuildContent(contentPanel);
@@ -367,15 +473,8 @@ public partial class SettingsWindow : Window
         root.Children.Add(sliderStepHeader);
 
         var sliderStepRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        sliderStepRow.Children.Add(new TextBlock { Text = "Шаг слайдера, %:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
-        var sliderStepUpDown = new NumericUpDown
-        {
-            Minimum = 1,
-            Maximum = 50,
-            Value = _appSettings.SliderStepPercent,
-            Width = 150,
-            FormatString = "0",
-        };
+        sliderStepRow.Children.Add(new TextBlock { Text = "Шаг слайдера:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
+        var sliderStepUpDown = BuildNumericStepper(1, 50, _appSettings.SliderStepPercent, "%");
         sliderStepUpDown.ValueChanged += (_, _) =>
         {
             var value = (int)(sliderStepUpDown.Value ?? 5);
@@ -399,15 +498,8 @@ public partial class SettingsWindow : Window
         root.Children.Add(enabledCheckBox);
 
         var stepRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        stepRow.Children.Add(new TextBlock { Text = "Шаг скролла, %:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
-        var stepUpDown = new NumericUpDown
-        {
-            Minimum = 1,
-            Maximum = 50,
-            Value = _traySettings.ScrollStepPercent,
-            Width = 150,
-            FormatString = "0",
-        };
+        stepRow.Children.Add(new TextBlock { Text = "Шаг скролла:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
+        var stepUpDown = BuildNumericStepper(1, 50, _traySettings.ScrollStepPercent, "%");
         stepUpDown.ValueChanged += (_, _) =>
         {
             _traySettings.ScrollStepPercent = (int)(stepUpDown.Value ?? 10);
@@ -453,8 +545,8 @@ public partial class SettingsWindow : Window
         RefreshStickyList();
         root.Children.Add(stickyListPanel);
 
-        var addLabel = new TextBlock { Text = "Новое значение, %:", VerticalAlignment = VerticalAlignment.Center };
-        var addValueInput = new NumericUpDown { Minimum = 0, Maximum = 100, Value = 50, Width = 150, FormatString = "0" };
+        var addLabel = new TextBlock { Text = "Новое значение:", VerticalAlignment = VerticalAlignment.Center };
+        var addValueInput = BuildNumericStepper(0, 100, 50, "%");
         var addButton = new Button { Content = "Добавить как липкое" };
         addButton.Click += (_, _) =>
         {
@@ -483,8 +575,52 @@ public partial class SettingsWindow : Window
         root.Children.Add(accentCheckBox);
 
         root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
+        root.Children.Add(new TextBlock { Text = "HUD с процентом", FontWeight = Avalonia.Media.FontWeight.Bold });
+        ToolTip.SetTip(root.Children[^1], "Всплывающее окошко с процентом, которое появляется при скролле над иконкой трея.");
+        root.Children.Add(BuildHudStyleSelector());
+
+        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
         root.Children.Add(new TextBlock { Text = "Иконка трея", FontWeight = Avalonia.Media.FontWeight.Bold });
         root.Children.Add(BuildTrayIconSection());
+    }
+
+    // Стиль HUD — параметрический выбор (FP12 Фаза 4, п.6), по аналогии с
+    // формой иконки трея (FP8): пользователь выбирает готовый стиль вместо
+    // подстройки параметров вручную. Сам HUD-window уже создан и живёт всё
+    // время работы приложения (см. App.axaml.cs) — она читает
+    // TraySettings.HudStyleId заново при каждом показе, отдельно уведомлять
+    // её о смене настройки не нужно.
+    private ComboBox BuildHudStyleSelector()
+    {
+        var options = new (HudStyle Value, string Label)[]
+        {
+            (HudStyle.GrowingRaysSun, "Растущее солнце"),
+            (HudStyle.CompactBar, "Компактная шкала"),
+            (HudStyle.PillToast, "Капсула"),
+        };
+
+        var currentStyle = Enum.TryParse<HudStyle>(_traySettings.HudStyleId, out var parsed) ? parsed : HudStyle.GrowingRaysSun;
+
+        var comboBox = new ComboBox
+        {
+            ItemsSource = options.Select(o => o.Label).ToList(),
+            SelectedIndex = Array.FindIndex(options, o => o.Value == currentStyle),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            MinWidth = 200,
+        };
+
+        comboBox.SelectionChanged += (_, _) =>
+        {
+            if (comboBox.SelectedIndex < 0)
+            {
+                return;
+            }
+
+            _traySettings.HudStyleId = options[comboBox.SelectedIndex].Value.ToString();
+            _traySettingsStore.Save(_traySettings);
+        };
+
+        return comboBox;
     }
 
     // Форма, цвет и масштаб иконки трея — три независимых параметра (FP8):
@@ -891,6 +1027,11 @@ public partial class SettingsWindow : Window
                 Width = 28,
                 Height = 28,
                 CornerRadius = new CornerRadius(14),
+                // Прозрачный, но НЕ null — тот же баг, что уже чинили для карточек
+                // форм: Border без явного фона не ловит клики в "пустых" местах,
+                // только на самих детях, так что клик срабатывал лишь если попасть
+                // точно в тонкий символ "+", а не по всему кругу.
+                Background = Avalonia.Media.Brushes.Transparent,
                 BorderThickness = new Thickness(1),
                 BorderBrush = neutralBorderBrush,
                 Cursor = handCursor,
@@ -1111,8 +1252,8 @@ public partial class SettingsWindow : Window
         newRulePanel.Children.Add(timeRow);
 
         var percentRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        percentRow.Children.Add(new TextBlock { Text = "Яркость, %:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
-        var percentInput = new NumericUpDown { Minimum = 0, Maximum = 100, Value = 80, Width = 150, FormatString = "0" };
+        percentRow.Children.Add(new TextBlock { Text = "Яркость:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
+        var percentInput = BuildNumericStepper(0, 100, 80, "%");
         percentRow.Children.Add(percentInput);
         newRulePanel.Children.Add(percentRow);
 
@@ -1518,8 +1659,8 @@ public partial class SettingsWindow : Window
         };
 
         var percentRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        percentRow.Children.Add(new TextBlock { Text = "Яркость, %:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
-        var percentInput = new NumericUpDown { Minimum = 0, Maximum = 100, Value = 50, Width = 150, FormatString = "0" };
+        percentRow.Children.Add(new TextBlock { Text = "Яркость:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
+        var percentInput = BuildNumericStepper(0, 100, 50, "%");
         percentRow.Children.Add(percentInput);
         root.Children.Add(percentRow);
 
@@ -1561,23 +1702,23 @@ public partial class SettingsWindow : Window
         root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
 
         var timeoutRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        timeoutRow.Children.Add(new TextBlock { Text = "Таймаут простоя, мин:", VerticalAlignment = VerticalAlignment.Center, Width = 180 });
-        var timeoutInput = new NumericUpDown { Minimum = 1, Maximum = 180, Value = idleSettings.IdleTimeoutMinutes, Width = 150, FormatString = "0" };
+        timeoutRow.Children.Add(new TextBlock { Text = "Таймаут простоя:", VerticalAlignment = VerticalAlignment.Center, Width = 180 });
+        var timeoutInput = BuildNumericStepper(1, 180, idleSettings.IdleTimeoutMinutes, "мин");
         timeoutRow.Children.Add(timeoutInput);
         root.Children.Add(timeoutRow);
 
         var dimPercentRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        dimPercentRow.Children.Add(new TextBlock { Text = "Яркость при простое, %:", VerticalAlignment = VerticalAlignment.Center, Width = 180 });
-        var dimPercentInput = new NumericUpDown { Minimum = 0, Maximum = 100, Value = idleSettings.DimPercent, Width = 150, FormatString = "0" };
+        dimPercentRow.Children.Add(new TextBlock { Text = "Яркость при простое:", VerticalAlignment = VerticalAlignment.Center, Width = 180 });
+        var dimPercentInput = BuildNumericStepper(0, 100, idleSettings.DimPercent, "%");
         dimPercentRow.Children.Add(dimPercentInput);
         root.Children.Add(dimPercentRow);
 
         var pollIntervalRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        var pollIntervalLabel = new TextBlock { Text = "Проверка простоя, сек:", VerticalAlignment = VerticalAlignment.Center, Width = 180 };
+        var pollIntervalLabel = new TextBlock { Text = "Проверка простоя:", VerticalAlignment = VerticalAlignment.Center, Width = 180 };
         ToolTip.SetTip(pollIntervalLabel, "Как часто проверяется, не пошевелили ли вы мышью/клавиатурой. Меньше — " +
             "отзывчивее восстановление после простоя, но чуть чаще фоновая проверка.");
         pollIntervalRow.Children.Add(pollIntervalLabel);
-        var pollIntervalInput = new NumericUpDown { Minimum = 1, Maximum = 60, Value = idleSettings.PollIntervalSeconds, Width = 150, FormatString = "0" };
+        var pollIntervalInput = BuildNumericStepper(1, 60, idleSettings.PollIntervalSeconds, "сек");
         pollIntervalRow.Children.Add(pollIntervalInput);
         root.Children.Add(pollIntervalRow);
 
@@ -1851,8 +1992,26 @@ public partial class SettingsWindow : Window
             UpdateBubbleVisibility();
         }, handledEventsToo: true);
 
-        var minusButton = new Button { Content = "−", Width = 32 };
-        var plusButton = new Button { Content = "+", Width = 32 };
+        // Padding=0 — общий Button ControlTheme (FP12) задаёт Padding="14,8" для
+        // обычных текстовых кнопок ("Сохранить" и т.п.); при ширине всего 32px
+        // это почти не оставляет места самому символу "−"/"+", и он выглядит
+        // как еле заметная точка.
+        var minusButton = new Button
+        {
+            Content = "−",
+            Width = 32,
+            Padding = new Thickness(0),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
+        var plusButton = new Button
+        {
+            Content = "+",
+            Width = 32,
+            Padding = new Thickness(0),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
         minusButton.Click += (_, _) => slider.Value = Math.Clamp(slider.Value - 1, slider.Minimum, slider.Maximum);
         plusButton.Click += (_, _) => slider.Value = Math.Clamp(slider.Value + 1, slider.Minimum, slider.Maximum);
 

@@ -97,12 +97,25 @@ public sealed class AccentColorService : IDisposable
     // которых легко ошибиться) — используется явно там, где акцент должен быть
     // заметен сразу и без взаимодействия с контролами (например, рамка бокового
     // списка категорий в SettingsWindow), а не только на выделении/чекбоксах.
+    //
+    // AppAccentOnBrush (FP12) — контрастный цвет ТЕКСТА/ИКОНОК поверх акцентной
+    // заливки (активный пункт навигации, залитая часть слайдера и т.п.). Акцент
+    // теперь динамический (из Windows или, позже, пользовательский — FP13), а не
+    // один зашитый оттенок, как в дизайн-макете, поэтому контраст вычисляется по
+    // яркости конкретного цвета, а не жёстко задан.
     private static void SetAccentBrush(Color color)
     {
         if (Application.Current is { } app)
         {
             app.Resources["AppAccentBrush"] = new SolidColorBrush(color);
+            app.Resources["AppAccentOnBrush"] = new SolidColorBrush(GetContrastingTextColor(color));
         }
+    }
+
+    private static Color GetContrastingTextColor(Color background)
+    {
+        var luminance = (0.299 * background.R + 0.587 * background.G + 0.114 * background.B) / 255.0;
+        return luminance > 0.6 ? Color.FromRgb(0x1B, 0x13, 0x18) : Colors.White;
     }
 
     private static ColorPaletteResources GetOrCreatePalette(FluentTheme theme, ThemeVariant variant)

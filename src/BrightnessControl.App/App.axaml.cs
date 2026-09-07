@@ -52,7 +52,7 @@ public partial class App : Application
             _globalApplier = new CoalescingBrightnessApplier(
                 percent => _brightnessController?.SetAllBrightness(percent),
                 () => _brightnessController?.GetGlobalPacingMs() ?? 100);
-            _hud = new BrightnessHudWindow();
+            _hud = new BrightnessHudWindow(_traySettings);
             // Профиль приложения приоритетнее расписания: пока на мониторе активен
             // подходящий-под-профиль процесс, расписание этот монитор не трогает
             // (см. AppProfileEngine.ActiveMonitorAdapterDeviceName и FP5 Фазу 3).

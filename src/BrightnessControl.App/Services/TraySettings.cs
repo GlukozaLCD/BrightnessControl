@@ -1,3 +1,5 @@
+using BrightnessControl.App.Views;
+
 namespace BrightnessControl.App.Services;
 
 public sealed class TraySettings
@@ -41,4 +43,9 @@ public sealed class TraySettings
 
     public int GetTrayIconScale(string designId) =>
         TrayIconScaleByDesign.TryGetValue(designId, out var value) ? value : 135;
+
+    // Стиль HUD с процентом (скролл над иконкой трея) — по той же логике,
+    // что и форма иконки трея выше: строка, а не голый enum, чтобы список
+    // стилей можно было расширять без миграции сохранённых настроек.
+    public string HudStyleId { get; set; } = HudStyle.GrowingRaysSun.ToString();
 }

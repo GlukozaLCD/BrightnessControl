@@ -6,19 +6,243 @@
 
     <Application.Styles>
         <FluentTheme />
+
+        <!-- FP12 Фаза 4, часть 1: собственный вид стандартных контролов (по
+             образцу Volumey/EarTrumpet), вместо дефолтных Fluent-шаблонов.
+             Идёт ПОСЛЕ FluentTheme, чтобы наши ControlTheme побеждали через
+             обычный порядок разрешения стилей Avalonia (последний
+             определённый с тем же ключом типа побеждает). Полный собственный
+             ControlTemplate вместо переопределения отдельных ресурсов темы —
+             осознанно: точные имена ресурсов конкретной версии FluentTheme
+             неизвестны без доступа к её исходникам (они скомпилированы
+             внутрь сборки, не лежат отдельными файлами), а свой шаблон,
+             использующий штатные примитивы Avalonia (Track/Thumb для
+             Slider — сделан отдельным следующим шагом), не зависит от чужих
+             деталей реализации. -->
+        <Styles>
+          <Styles.Resources>
+            <ControlTheme x:Key="{x:Type Button}" TargetType="Button">
+                <Setter Property="Background" Value="{DynamicResource AppSurface}" />
+                <Setter Property="Foreground" Value="{DynamicResource AppInk}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource AppLineStrong}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="Padding" Value="14,8" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Cursor" Value="Hand" />
+                <Setter Property="Template">
+                    <ControlTemplate TargetType="Button">
+                        <Border Name="PART_Border"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="{TemplateBinding CornerRadius}">
+                            <ContentPresenter Content="{TemplateBinding Content}"
+                                               ContentTemplate="{TemplateBinding ContentTemplate}"
+                                               Padding="{TemplateBinding Padding}"
+                                               HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                               VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter>
+
+                <Style Selector="^:pointerover /template/ Border#PART_Border">
+                    <Setter Property="Background" Value="{DynamicResource AppSurfaceHover}" />
+                </Style>
+                <Style Selector="^:pressed /template/ Border#PART_Border">
+                    <Setter Property="Opacity" Value="0.75" />
+                </Style>
+                <Style Selector="^:disabled">
+                    <Setter Property="Opacity" Value="0.45" />
+                </Style>
+            </ControlTheme>
+
+            <!-- CheckBox визуально становится тумблером (трек + бегунок) — сам
+                 CheckBox уже умеет переключать IsChecked по клику (унаследовано
+                 от ToggleButton), меняется только внешний вид через шаблон. -->
+            <ControlTheme x:Key="{x:Type CheckBox}" TargetType="CheckBox">
+                <Setter Property="Foreground" Value="{DynamicResource AppInk}" />
+                <Setter Property="Cursor" Value="Hand" />
+                <Setter Property="Template">
+                    <ControlTemplate TargetType="CheckBox">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <Border Name="PART_Track"
+                                    Width="38" Height="22"
+                                    CornerRadius="11"
+                                    Background="{DynamicResource AppSurfaceSunken}"
+                                    BorderBrush="{DynamicResource AppLineStrong}"
+                                    BorderThickness="1">
+                                <Border Name="PART_Thumb"
+                                        Width="16" Height="16"
+                                        CornerRadius="8"
+                                        Background="{DynamicResource AppFaint}"
+                                        HorizontalAlignment="Left"
+                                        Margin="2,0,0,0" />
+                            </Border>
+                            <ContentPresenter Content="{TemplateBinding Content}"
+                                               ContentTemplate="{TemplateBinding ContentTemplate}"
+                                               VerticalAlignment="Center" />
+                        </StackPanel>
+                    </ControlTemplate>
+                </Setter>
+
+                <Style Selector="^:checked /template/ Border#PART_Track">
+                    <Setter Property="Background" Value="{DynamicResource AppAccentBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource AppAccentBrush}" />
+                </Style>
+                <Style Selector="^:checked /template/ Border#PART_Thumb">
+                    <Setter Property="Background" Value="{DynamicResource AppAccentOnBrush}" />
+                    <Setter Property="HorizontalAlignment" Value="Right" />
+                    <Setter Property="Margin" Value="0,0,2,0" />
+                </Style>
+                <Style Selector="^:disabled">
+                    <Setter Property="Opacity" Value="0.45" />
+                </Style>
+            </ControlTheme>
+
+            <!-- Slider — полный собственный шаблон (тонкий трек + крупный
+                 круглый бегунок), а не переопределение чужих resource-ключей.
+                 ВАЖНО: Thumb внутри Track должен остаться настоящим Avalonia
+                 Thumb-контролом (не Border) — SettingsWindow.AddSliderRow ищет
+                 его через GetVisualDescendants().OfType<Thumb>() для
+                 позиционирования всплывающего пузырька с процентом; замени
+                 его на что-то другое — и пузырёк перестанет находить, куда
+                 указывать. TickFrequency/IsSnapToTickEnabled обрабатываются
+                 самим классом Slider независимо от шаблона — их трогать не
+                 нужно. -->
+            <ControlTheme x:Key="{x:Type Thumb}" TargetType="Thumb">
+                <Setter Property="Template">
+                    <ControlTemplate TargetType="Thumb">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="{TemplateBinding CornerRadius}" />
+                    </ControlTemplate>
+                </Setter>
+            </ControlTheme>
+
+            <ControlTheme x:Key="{x:Type Slider}" TargetType="Slider">
+                <Setter Property="MinHeight" Value="24" />
+                <Setter Property="Template">
+                    <ControlTemplate TargetType="Slider">
+                        <Grid VerticalAlignment="Center">
+                            <Track Name="PART_Track"
+                                   Minimum="{TemplateBinding Minimum}"
+                                   Maximum="{TemplateBinding Maximum}"
+                                   Value="{TemplateBinding Value, Mode=TwoWay}"
+                                   IsDirectionReversed="{TemplateBinding IsDirectionReversed}"
+                                   Orientation="Horizontal">
+                                <Track.DecreaseButton>
+                                    <RepeatButton Name="PART_DecreaseButton"
+                                                  Background="Transparent"
+                                                  BorderThickness="0"
+                                                  Focusable="False"
+                                                  Padding="0"
+                                                  MinWidth="0"
+                                                  MinHeight="0"
+                                                  Height="24"
+                                                  HorizontalAlignment="Stretch"
+                                                  VerticalAlignment="Stretch">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="RepeatButton">
+                                                <Border Background="{DynamicResource AppAccentBrush}"
+                                                        Height="4"
+                                                        VerticalAlignment="Center"
+                                                        CornerRadius="2" />
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.DecreaseButton>
+                                <Track.IncreaseButton>
+                                    <RepeatButton Name="PART_IncreaseButton"
+                                                  Background="Transparent"
+                                                  BorderThickness="0"
+                                                  Focusable="False"
+                                                  Padding="0"
+                                                  MinWidth="0"
+                                                  MinHeight="0"
+                                                  Height="24"
+                                                  HorizontalAlignment="Stretch"
+                                                  VerticalAlignment="Stretch">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="RepeatButton">
+                                                <Border Background="{DynamicResource AppSurfaceSunken}"
+                                                        BorderBrush="{DynamicResource AppLineStrong}"
+                                                        BorderThickness="1"
+                                                        Height="4"
+                                                        VerticalAlignment="Center"
+                                                        CornerRadius="2" />
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.IncreaseButton>
+                                <Thumb Name="thumb"
+                                       Width="16" Height="16"
+                                       MinWidth="0"
+                                       MinHeight="0"
+                                       Background="{DynamicResource AppSurface}"
+                                       BorderBrush="{DynamicResource AppAccentBrush}"
+                                       BorderThickness="3"
+                                       CornerRadius="8" />
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter>
+                <Style Selector="^:disabled">
+                    <Setter Property="Opacity" Value="0.45" />
+                </Style>
+            </ControlTheme>
+          </Styles.Resources>
+
+            <!-- ComboBox — НЕ ControlTheme (та полностью заменяет шаблон, и без
+                 своего Template-сеттера контрол остался бы пустым) — обычный
+                 Style просто накладывает свойства поверх уже применённого
+                 дефолтного шаблона FluentTheme, не трогая механику
+                 всплывающего списка (Popup), которую рискованно переписывать
+                 вслепую. -->
+            <Style Selector="ComboBox">
+                <Setter Property="Background" Value="{DynamicResource AppSurfaceSunken}" />
+                <Setter Property="Foreground" Value="{DynamicResource AppInk}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource AppLineStrong}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="Padding" Value="10,6" />
+                <Setter Property="Cursor" Value="Hand" />
+            </Style>
+        </Styles>
     </Application.Styles>
 
-    <!-- FP9: собственный, более глубокий тёмный фон окон (по образцу Volumey) —
-         стандартный тёмный фон Fluent-темы недостаточно тёмный для этого стиля.
-         В светлой теме остаётся обычный белый, чтобы не ломать её. -->
+    <!-- FP9/FP12: собственная палитра окон (по образцу Volumey/EarTrumpet, см.
+         .plans/PLAN_FP12_visual-redesign.md) — стандартные цвета Fluent-темы
+         недостаточно тёмные и никак не связаны друг с другом по духу. Светлая
+         тема получила только БАЗОВУЮ совместимость (разумные аналоги-инверсии),
+         а не полный дизайн-проход — одобренный Artifact-макет показывал только
+         тёмный вариант. AppAccentBrush/AppAccentOnBrush сюда не входят — они
+         динамические, задаются программно в AccentColorService. -->
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.ThemeDictionaries>
                 <ResourceDictionary x:Key="Light">
                     <SolidColorBrush x:Key="AppWindowBackground" Color="#FFFFFF" />
+                    <SolidColorBrush x:Key="AppSurface" Color="#F3F1F6" />
+                    <SolidColorBrush x:Key="AppSurfaceSunken" Color="#E8E5EE" />
+                    <SolidColorBrush x:Key="AppSurfaceHover" Color="#DEDAE8" />
+                    <SolidColorBrush x:Key="AppInk" Color="#221D2C" />
+                    <SolidColorBrush x:Key="AppMuted" Color="#655E70" />
+                    <SolidColorBrush x:Key="AppFaint" Color="#8F899A" />
+                    <SolidColorBrush x:Key="AppLine" Color="#12000000" />
+                    <SolidColorBrush x:Key="AppLineStrong" Color="#1F000000" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="Dark">
-                    <SolidColorBrush x:Key="AppWindowBackground" Color="#0F0F0F" />
+                    <SolidColorBrush x:Key="AppWindowBackground" Color="#17151C" />
+                    <SolidColorBrush x:Key="AppSurface" Color="#201D28" />
+                    <SolidColorBrush x:Key="AppSurfaceSunken" Color="#1B1822" />
+                    <SolidColorBrush x:Key="AppSurfaceHover" Color="#2A2635" />
+                    <SolidColorBrush x:Key="AppInk" Color="#F1EEF7" />
+                    <SolidColorBrush x:Key="AppMuted" Color="#948FA3" />
+                    <SolidColorBrush x:Key="AppFaint" Color="#6B6678" />
+                    <SolidColorBrush x:Key="AppLine" Color="#12FFFFFF" />
+                    <SolidColorBrush x:Key="AppLineStrong" Color="#1FFFFFFF" />
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
         </ResourceDictionary>

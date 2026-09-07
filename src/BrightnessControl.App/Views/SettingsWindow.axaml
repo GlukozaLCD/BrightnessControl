@@ -25,7 +25,7 @@
             <Border DockPanel.Dock="Top" Height="3" Background="{DynamicResource AppAccentBrush}" />
             <Grid x:Name="NavContentGrid" ColumnDefinitions="*,Auto">
                 <ScrollViewer Grid.Column="0">
-                    <StackPanel x:Name="ContentPanel" Margin="16" Spacing="8" />
+                    <StackPanel x:Name="ContentPanel" Margin="16" Spacing="8" Focusable="True" Background="Transparent" />
                 </ScrollViewer>
                 <Border x:Name="NavBorder"
                         Grid.Column="1"
