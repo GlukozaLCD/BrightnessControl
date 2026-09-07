@@ -24,6 +24,7 @@ public partial class App : Application
     private AppProfileEngine? _appProfileEngine;
     private IdleEngine? _idleEngine;
     private AccentColorService? _accentColorService;
+    private MonitorLockService? _monitorLockService;
     private int _globalPercent = 50;
     private int? _stickyClungValue;
 
@@ -49,8 +50,28 @@ public partial class App : Application
             ApplyTheme(_appSettings.Theme);
             _accentColorService = new AccentColorService(_appSettings, _appSettingsStore);
             _globalPercent = ComputeInitialGlobalPercent(_brightnessController);
+            // FP14: "замочек" на яркость монитора — приоритет ВЫШЕ всех
+            // существующих (простой/профиль/расписание) И выше глобального
+            // слайдера "Все мониторы" (уточнено пользователем явно — лок должен
+            // защищать и от собственной попытки пользователя сдвинуть ВСЕ
+            // мониторы разом, не только от автоматики). Ручное управление
+            // СОБСТВЕННЫМ слайдером залоченного монитора (в MonitorSlidersPopup)
+            // лок не трогает — это единственный оставшийся путь менять его
+            // яркость вручную.
+            _monitorLockService = new MonitorLockService();
             _globalApplier = new CoalescingBrightnessApplier(
-                percent => _brightnessController?.SetAllBrightness(percent),
+                percent =>
+                {
+                    if (_brightnessController is null)
+                    {
+                        return;
+                    }
+
+                    var targets = _brightnessController.Monitors
+                        .Where(monitor => _monitorLockService?.IsLocked(monitor) != true)
+                        .ToDictionary(monitor => monitor, _ => percent);
+                    _brightnessController.SetEachBrightness(targets);
+                },
                 () => _brightnessController?.GetGlobalPacingMs() ?? 100);
             _hud = new BrightnessHudWindow(_traySettings);
             // Профиль приложения приоритетнее расписания: пока на мониторе активен
@@ -58,16 +79,43 @@ public partial class App : Application
             // (см. AppProfileEngine.ActiveMonitorAdapterDeviceName и FP5 Фазу 3).
             // Приглушение по бездействию (FP6) — глобальное и приоритетнее всех: пока
             // оно активно, расписание игнорирует ВСЕ мониторы (см. IdleEngine.IsDimmed).
-            _appProfileEngine = new AppProfileEngine(_brightnessController);
+            _appProfileEngine = new AppProfileEngine(
+                _brightnessController,
+                isMonitorLocked: monitor => _monitorLockService?.IsLocked(monitor) == true);
             _idleEngine = new IdleEngine(
                 _brightnessController,
                 resolveActiveProfilePercent: monitor => _appProfileEngine?.ActiveMonitorAdapterDeviceName == monitor.AdapterDeviceName
                     ? _appProfileEngine.ActiveProfilePercent
-                    : null);
+                    : null,
+                isMonitorLocked: monitor => _monitorLockService?.IsLocked(monitor) == true);
             _scheduleEngine = new ScheduleEngine(
                 _brightnessController,
                 isMonitorSuppressed: monitor => _idleEngine?.IsDimmed == true
-                    || _appProfileEngine?.ActiveMonitorAdapterDeviceName == monitor.AdapterDeviceName);
+                    || _appProfileEngine?.ActiveMonitorAdapterDeviceName == monitor.AdapterDeviceName
+                    || _monitorLockService?.IsLocked(monitor) == true);
+
+            // При снятии лока монитор должен СРАЗУ получить то значение, которое
+            // автоматика уже хочет прямо сейчас (приоритет простой → профиль →
+            // расписание — тот же порядок, что и везде), а не ждать следующего
+            // события/тика соответствующего движка.
+            _monitorLockService.LockChanged += (monitor, locked) =>
+            {
+                if (locked || _brightnessController is null)
+                {
+                    return;
+                }
+
+                int? resyncValue = _idleEngine?.IsDimmed == true
+                    ? null // простой сам восстановит при выходе — не вмешиваемся, пока активен
+                    : _appProfileEngine?.ActiveMonitorAdapterDeviceName == monitor.AdapterDeviceName
+                        ? _appProfileEngine.ActiveProfilePercent
+                        : ComputeScheduleFallback(monitor);
+
+                if (resyncValue is not null)
+                {
+                    _brightnessController.SetBrightness(monitor, resyncValue.Value);
+                }
+            };
 
             if (!Enum.TryParse<TrayIconDesign>(_traySettings.TrayIconDesignId, out var initialDesign))
             {
@@ -100,6 +148,30 @@ public partial class App : Application
             AppThemePreference.Dark => Avalonia.Styling.ThemeVariant.Dark,
             _ => Avalonia.Styling.ThemeVariant.Default,
         };
+    }
+
+    // FP14 — то же самое вычисление, что уже дважды продублировано в Core
+    // (AppProfileEngine.ComputeScheduleFallback/IdleEngine.ComputeScheduleFallback) —
+    // третья копия здесь осознанно, по тому же принципу: это маленький
+    // самодостаточный расчёт "что расписание хочет для монитора ПРЯМО СЕЙЧАС",
+    // не стоящий отдельной абстракции ради переиспользования между Core и App.
+    private static int? ComputeScheduleFallback(MonitorInfo monitor)
+    {
+        var schedule = new JsonFileScheduleStore().Load();
+        if (!schedule.IsEnabled || schedule.Rules.Count == 0)
+        {
+            return null;
+        }
+
+        var monitorKey = BrightnessController.GetMonitorKey(monitor);
+        var applicableRules = schedule.Rules
+            .Where(r => r.MonitorKeys.Count == 0 || r.MonitorKeys.Contains(monitorKey))
+            .OrderBy(r => r.Time)
+            .ToList();
+
+        return applicableRules.Count == 0
+            ? null
+            : ScheduleEngine.FindActiveRule(applicableRules, TimeOnly.FromDateTime(DateTime.Now)).Percent;
     }
 
     private static int ComputeInitialGlobalPercent(BrightnessController controller)
@@ -173,7 +245,7 @@ public partial class App : Application
             iconRect = new MonitorBounds(cursorX, cursorY, 0, 0);
         }
 
-        var popup = new GlobalSliderPopup(_brightnessController, _globalApplier, _appSettings?.SliderStepPercent ?? 5);
+        var popup = new GlobalSliderPopup(_brightnessController, _globalApplier, _appSettings?.SliderStepPercent ?? 5, _monitorLockService!);
         popup.ShowNearIcon(iconRect);
     }
 

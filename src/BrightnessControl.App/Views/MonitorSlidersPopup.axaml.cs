@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Shapes;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Markup.Xaml;
@@ -19,20 +20,23 @@ public partial class MonitorSlidersPopup : Window
 {
     private readonly BrightnessController _controller;
     private readonly int _sliderStepPercent;
+    private readonly MonitorLockService _lockService;
     private readonly Dictionary<string, CoalescingBrightnessApplier> _perMonitorAppliers = new();
-    private readonly List<Slider> _monitorSliders = new();
+    private readonly List<(MonitorInfo Monitor, Slider Slider)> _monitorSliders = new();
 
     // Нужен только для XAML-дизайнера/превью.
     public MonitorSlidersPopup()
     {
         _controller = null!;
+        _lockService = null!;
         InitializeComponent();
     }
 
-    public MonitorSlidersPopup(BrightnessController controller, int sliderStepPercent)
+    public MonitorSlidersPopup(BrightnessController controller, int sliderStepPercent, MonitorLockService lockService)
     {
         _controller = controller;
         _sliderStepPercent = sliderStepPercent;
+        _lockService = lockService;
         InitializeComponent();
         BuildContent();
     }
@@ -53,7 +57,19 @@ public partial class MonitorSlidersPopup : Window
         {
             var current = _controller.GetBrightness(monitor)?.Percent ?? 50;
             var nameControl = BuildEditableMonitorLabel(monitor, monitorNames, monitorNameStore, nameColumnWidth);
-            var slider = SettingsWindow.AddSliderRow(root, nameControl, current, _sliderStepPercent, percent =>
+
+            // FP14 — "замочек" на яркость: маленький кружок перед названием
+            // монитора (тот же визуальный язык, что уже используют
+            // статус-индикаторы в приложении — залитый кружок = состояние
+            // включено). Собран здесь же, а не как правка общего
+            // SettingsWindow.AddSliderRow — лок нужен ТОЛЬКО в этом окне, не
+            // в GlobalSliderPopup/остальных вызовах.
+            var lockToggle = BuildLockToggle(monitor);
+            var nameWithLock = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+            nameWithLock.Children.Add(lockToggle);
+            nameWithLock.Children.Add(nameControl);
+
+            var slider = SettingsWindow.AddSliderRow(root, nameWithLock, current, _sliderStepPercent, percent =>
             {
                 if (!_perMonitorAppliers.TryGetValue(monitor.DeviceId, out var applier))
                 {
@@ -65,8 +81,86 @@ public partial class MonitorSlidersPopup : Window
 
                 applier.Request(percent);
             });
-            _monitorSliders.Add(slider);
+            _monitorSliders.Add((monitor, slider));
         }
+    }
+
+    // FP14 — настоящий силуэт замочка (не абстрактный кружок), собран из двух
+    // примитивов, тот же приём наложения, что уже использован в
+    // TrayIconRenderer.DrawHalfDisc: дужка — полное кольцо (Ellipse, только
+    // обводка), корпус — Border, добавленный ПОСЛЕ (значит рисуется поверх) и
+    // перекрывающий нижнюю половину дужки, так что видна только верхняя дуга —
+    // именно такой силуэт и читается как замок. Залит акцентным цветом =
+    // зафиксировано, только контур приглушённым цветом = не зафиксировано.
+    private Control BuildLockToggle(MonitorInfo monitor)
+    {
+        const double canvasSize = 15;
+        const double shackleSize = 8;
+        const double bodyWidth = 12;
+        const double bodyHeight = 8;
+
+        var canvas = new Canvas
+        {
+            Width = canvasSize,
+            Height = canvasSize,
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+
+        var shackle = new Ellipse
+        {
+            Width = shackleSize,
+            Height = shackleSize,
+            Fill = Brushes.Transparent,
+            StrokeThickness = 1.6,
+        };
+        Canvas.SetLeft(shackle, (canvasSize - shackleSize) / 2);
+        Canvas.SetTop(shackle, 1);
+
+        var body = new Border
+        {
+            Width = bodyWidth,
+            Height = bodyHeight,
+            CornerRadius = new CornerRadius(2),
+            BorderThickness = new Thickness(1.6),
+        };
+        Canvas.SetLeft(body, (canvasSize - bodyWidth) / 2);
+        Canvas.SetTop(body, canvasSize - bodyHeight - 1);
+
+        canvas.Children.Add(shackle);
+        canvas.Children.Add(body);
+
+        void Refresh()
+        {
+            var locked = _lockService.IsLocked(monitor);
+            if (locked)
+            {
+                shackle.Bind(Shape.StrokeProperty, this.GetResourceObservable("AppAccentBrush"));
+                body.Bind(Border.BackgroundProperty, this.GetResourceObservable("AppAccentBrush"));
+                body.BorderThickness = new Thickness(0);
+            }
+            else
+            {
+                shackle.Bind(Shape.StrokeProperty, this.GetResourceObservable("AppLineStrong"));
+                body.Background = Brushes.Transparent;
+                body.Bind(Border.BorderBrushProperty, this.GetResourceObservable("AppLineStrong"));
+                body.BorderThickness = new Thickness(1.6);
+            }
+
+            ToolTip.SetTip(canvas, locked
+                ? "Яркость зафиксирована — автоматика (расписание/профили/простой) её не трогает. Нажмите, чтобы снять."
+                : "Нажмите, чтобы зафиксировать текущую яркость — автоматика перестанет её менять (ручное управление слайдером остаётся доступным).");
+        }
+
+        Refresh();
+        canvas.PointerPressed += (_, e) =>
+        {
+            e.Handled = true;
+            _lockService.SetLocked(monitor, !_lockService.IsLocked(monitor));
+            Refresh();
+        };
+
+        return canvas;
     }
 
     // Клик по названию монитора (или по значку пера) переключает его на инлайн
@@ -199,10 +293,22 @@ public partial class MonitorSlidersPopup : Window
         return container;
     }
 
+    // FP14 — залоченный монитор пропускается ЦЕЛИКОМ: глобальный слайдер ("Все
+    // мониторы") не должен утаскивать его значение за собой, лок защищает и от
+    // этого действия, не только от автоматики (уточнено пользователем явно —
+    // "замок должен блокировать и мою попытку изменить яркость глобальным
+    // слайдером тоже"). Прямое управление ЕГО СОБСТВЕННЫМ слайдером (строка
+    // этого же монитора здесь, в MonitorSlidersPopup) лок не трогает — это
+    // осталось единственным путём менять яркость залоченного монитора вручную.
     public void SetAllSliders(int percent)
     {
-        foreach (var slider in _monitorSliders)
+        foreach (var (monitor, slider) in _monitorSliders)
         {
+            if (_lockService.IsLocked(monitor))
+            {
+                continue;
+            }
+
             slider.Value = percent;
         }
     }

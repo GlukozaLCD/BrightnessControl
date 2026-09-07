@@ -27,6 +27,7 @@ public partial class GlobalSliderPopup : Window
     private readonly BrightnessController _controller;
     private readonly CoalescingBrightnessApplier _globalApplier;
     private readonly int _sliderStepPercent;
+    private readonly MonitorLockService _lockService;
     private MonitorSlidersPopup? _monitorSlidersPopup;
     private Button? _expandButton;
 
@@ -35,14 +36,16 @@ public partial class GlobalSliderPopup : Window
     {
         _controller = null!;
         _globalApplier = null!;
+        _lockService = null!;
         InitializeComponent();
     }
 
-    public GlobalSliderPopup(BrightnessController controller, CoalescingBrightnessApplier globalApplier, int sliderStepPercent)
+    public GlobalSliderPopup(BrightnessController controller, CoalescingBrightnessApplier globalApplier, int sliderStepPercent, MonitorLockService lockService)
     {
         _controller = controller;
         _globalApplier = globalApplier;
         _sliderStepPercent = sliderStepPercent;
+        _lockService = lockService;
         InitializeComponent();
         BuildContent();
 
@@ -105,7 +108,7 @@ public partial class GlobalSliderPopup : Window
             return;
         }
 
-        var popup = new MonitorSlidersPopup(_controller, _sliderStepPercent);
+        var popup = new MonitorSlidersPopup(_controller, _sliderStepPercent, _lockService);
         _monitorSlidersPopup = popup;
         popup.Closed += (_, _) =>
         {

@@ -13,6 +13,7 @@ public sealed class IdleEngine : IDisposable
     private readonly IIdleSettingsStore _store;
     private readonly IScheduleStore _scheduleStore;
     private readonly Func<MonitorInfo, int?>? _resolveActiveProfilePercent;
+    private readonly Func<MonitorInfo, bool>? _isMonitorLocked;
     private readonly Dictionary<string, int> _preDimSnapshots = new();
     // Таймер работает на ThreadPool и НЕ ждёт завершения предыдущего тика — если
     // DimAll/RestoreAll (реальная запись в DDC/CI, может занять больше, чем короткий
@@ -34,12 +35,14 @@ public sealed class IdleEngine : IDisposable
         IIdleSettingsStore? store = null,
         IScheduleStore? scheduleStore = null,
         Func<MonitorInfo, int?>? resolveActiveProfilePercent = null,
+        Func<MonitorInfo, bool>? isMonitorLocked = null,
         bool autoStart = true)
     {
         _controller = controller;
         _store = store ?? new JsonFileIdleSettingsStore();
         _scheduleStore = scheduleStore ?? new JsonFileScheduleStore();
         _resolveActiveProfilePercent = resolveActiveProfilePercent;
+        _isMonitorLocked = isMonitorLocked;
 
         if (autoStart)
         {
@@ -92,6 +95,7 @@ public sealed class IdleEngine : IDisposable
     private void DimAll(int dimPercent)
     {
         _preDimSnapshots.Clear();
+        var targets = new Dictionary<MonitorInfo, int>();
         foreach (var monitor in _controller.Monitors)
         {
             var current = _controller.GetBrightness(monitor)?.Percent;
@@ -99,13 +103,23 @@ public sealed class IdleEngine : IDisposable
             {
                 _preDimSnapshots[BrightnessController.GetMonitorKey(monitor)] = current.Value;
             }
+
+            // FP14: залоченный монитор пропускаем целиком — простой не должен
+            // приглушать яркость, которую пользователь явно зафиксировал.
+            if (_isMonitorLocked?.Invoke(monitor) != true)
+            {
+                targets[monitor] = dimPercent;
+            }
         }
 
-        // Один параллельный проход (см. BrightnessController.SetAllBrightness) — та же
+        // Один параллельный проход (см. BrightnessController.SetEachBrightness) — та же
         // адаптивная пауза на монитор, что и везде в проекте. Мониторы из-за неё всё
         // равно закончат запись не одновременно — это принято как есть, а не решается
         // искусственной "лесенкой" из мелких шагов (та выглядела хуже, чем один скачок).
-        _controller.SetAllBrightness(dimPercent);
+        // Раньше здесь был единый SetAllBrightness (бьёт по ВСЕМ мониторам разом) — с
+        // появлением лока (FP14) понадобилась поштучная фильтрация, поэтому перешли на
+        // тот же SetEachBrightness, что уже использует RestoreAll ниже.
+        _controller.SetEachBrightness(targets);
         _isDimmed = true;
     }
 
@@ -114,6 +128,13 @@ public sealed class IdleEngine : IDisposable
         var targets = new Dictionary<MonitorInfo, int>();
         foreach (var monitor in _controller.Monitors)
         {
+            // FP14: залоченный монитор простой не трогал при затемнении (см. DimAll),
+            // поэтому и восстанавливать для него нечего — пропускаем.
+            if (_isMonitorLocked?.Invoke(monitor) == true)
+            {
+                continue;
+            }
+
             var monitorKey = BrightnessController.GetMonitorKey(monitor);
             int? snapshot = _preDimSnapshots.TryGetValue(monitorKey, out var value) ? value : null;
 

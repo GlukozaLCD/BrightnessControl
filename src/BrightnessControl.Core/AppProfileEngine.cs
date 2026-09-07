@@ -12,6 +12,7 @@ public sealed class AppProfileEngine : IDisposable
     private readonly IAppProfileStore _store;
     private readonly IForegroundAppWatcher _watcher;
     private readonly IScheduleStore _scheduleStore;
+    private readonly Func<MonitorInfo, bool>? _isMonitorLocked;
 
     private string? _activeProfileId;
     private string? _activeMonitorAdapterName;
@@ -27,16 +28,26 @@ public sealed class AppProfileEngine : IDisposable
     public string? ActiveMonitorAdapterDeviceName => _activeMonitorAdapterName;
     public int? ActiveProfilePercent => _activeProfilePercent;
 
+    // isMonitorLocked (FP14): "замочек" на яркость монитора — приоритетнее
+    // профиля приложения. Бухгалтерия (_activeProfileId/_activeMonitorAdapterName/
+    // _activeProfilePercent) ведётся как обычно даже для залоченного монитора —
+    // только САМА запись яркости (SetBrightness) пропускается. Это осознанно:
+    // как только лок снимут, внешний код (App.axaml.cs) сможет опереться на
+    // ActiveMonitorAdapterDeviceName/ActiveProfilePercent, чтобы сразу
+    // досчитать актуальное значение для монитора, а не ждать следующего
+    // события смены переднего окна.
     public AppProfileEngine(
         BrightnessController controller,
         IAppProfileStore? store = null,
         IForegroundAppWatcher? watcher = null,
-        IScheduleStore? scheduleStore = null)
+        IScheduleStore? scheduleStore = null,
+        Func<MonitorInfo, bool>? isMonitorLocked = null)
     {
         _controller = controller;
         _store = store ?? new JsonFileAppProfileStore();
         _watcher = watcher ?? new ForegroundAppWatcher();
         _scheduleStore = scheduleStore ?? new JsonFileScheduleStore();
+        _isMonitorLocked = isMonitorLocked;
         _watcher.ForegroundChanged += OnForegroundChanged;
         _watcher.ReportCurrentForegroundWindow();
     }
@@ -67,7 +78,11 @@ public sealed class AppProfileEngine : IDisposable
             if (monitor is not null)
             {
                 _snapshotPercent = _controller.GetBrightness(monitor)?.Percent;
-                _controller.SetBrightness(monitor, matched.Percent);
+                if (_isMonitorLocked?.Invoke(monitor) != true)
+                {
+                    _controller.SetBrightness(monitor, matched.Percent);
+                }
+
                 _activeProfileId = matched.Id;
                 _activeMonitorAdapterName = info.MonitorAdapterDeviceName;
                 _activeProfilePercent = matched.Percent;
@@ -88,7 +103,7 @@ public sealed class AppProfileEngine : IDisposable
         }
 
         var monitor = _controller.Monitors.FirstOrDefault(m => m.AdapterDeviceName == _activeMonitorAdapterName);
-        if (monitor is not null)
+        if (monitor is not null && _isMonitorLocked?.Invoke(monitor) != true)
         {
             // Снимок мог устареть, если расписание успело смениться, пока профиль был
             // активен — поэтому вместо слепого отката к снимку сначала пересчитываем,
