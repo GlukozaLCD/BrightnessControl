@@ -6,6 +6,7 @@ using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Markup.Xaml;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using BrightnessControl.App.Services;
@@ -846,6 +847,13 @@ public partial class SettingsWindow : Window
     // файла, поэтому любую комбинацию можно применить сразу — без пересборки
     // и без необходимости хранить файл на каждую комбинацию. Масштаб — свой
     // на каждую форму (крутится колесом мыши над карточкой), не общий слайдер.
+    // FP11 — единая карточка галереи: либо встроенная векторная форма
+    // (IsCustom=false, Custom=null), либо своя импортированная растровая
+    // иконка (IsCustom=true). Обе живут в ОДНОЙ галерее и используют ОДНИ И
+    // ТЕ ЖЕ строково-ключевые словари TraySettings (Scale/NameOverrides/
+    // Order) — задел на это был заложен ещё в FP8.
+    private sealed record TrayIconCard(string Id, string BaseDisplayName, bool IsCustom, CustomTrayIcon? Custom);
+
     private Control BuildTrayIconSection()
     {
         var panel = new StackPanel { Spacing = 6 };
@@ -867,9 +875,12 @@ public partial class SettingsWindow : Window
         const int availableGalleryWidth = 760 - 2 - 170 - 32 - 18;
         const int cardTotalWidth = 104 + 8; // сама карточка (см. ниже) + Margin(4) с каждой стороны
         var maxDesignColumns = Math.Max(1, availableGalleryWidth / cardTotalWidth);
-        var designColumns = ComputeOptimalColumns(TrayIconCatalog.Designs.Count, maxDesignColumns);
 
-        var designGallery = new UniformGrid { Columns = designColumns };
+        // FP11 — число колонок больше не фиксируется один раз при построении:
+        // с добавлением/удалением своих иконок общее количество карточек
+        // меняется, поэтому пересчитывается заново при каждом RefreshDesignGallery
+        // (см. ниже), а не только исходя из числа встроенных форм.
+        var designGallery = new UniformGrid();
         panel.Children.Add(new TextBlock { Text = "Форма", FontSize = 12, Foreground = mutedBrush });
         panel.Children.Add(designGallery);
         panel.Children.Add(new TextBlock
@@ -881,6 +892,30 @@ public partial class SettingsWindow : Window
             Margin = new Thickness(0, 2, 0, 0),
         });
 
+        // FP11 — импорт своей иконки трея (растр: PNG/ICO/BMP/JPG). Копируется В
+        // СВОЮ папку (CustomTrayIconStorage) — переживает переименование/
+        // перемещение/удаление исходного файла. Параметрический цвет к ней не
+        // применяется (показывается "как есть"), масштаб — тот же диапазон и тот
+        // же механизм (колесо мыши над карточкой), что и у встроенных форм.
+        //
+        // Обработчик клика подключается НИЖЕ (после ApplyLiveIcon/RefreshDesignGallery)
+        // — сама кнопка создаётся и добавляется в дерево здесь же ради нужного
+        // порядка в разметке, но её Click-лямбда ссылается на ещё не объявленные
+        // на этом месте локальные функции/переменные (renamingDesignId и т.п.), а
+        // лямбда не может форвард-ссылаться на них, в отличие от локальных функций.
+        var importButton = new Button { Content = "Добавить свою иконку", Margin = new Thickness(0, 6, 0, 0) };
+        ToolTip.SetTip(importButton, "Подходит любое изображение в формате PNG/ICO/BMP/JPG. Для лучшего результата — квадратная картинка, желательно с прозрачным фоном (PNG). Цвет к своим иконкам не применяется, показываются как есть.");
+        panel.Children.Add(importButton);
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Подходит любое изображение (PNG/ICO/BMP/JPG). Лучше всего смотрится квадратная картинка с прозрачным фоном — трей маленький, сложные и неквадратные изображения при масштабировании теряют детали.",
+            FontSize = 10,
+            Foreground = mutedBrush,
+            FontStyle = Avalonia.Media.FontStyle.Italic,
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+            Margin = new Thickness(0, 2, 0, 0),
+        });
+
         var colorRow = new WrapPanel { Margin = new Thickness(0, 4, 0, 0) };
         panel.Children.Add(new TextBlock { Text = "Цвет", FontSize = 12, Foreground = mutedBrush, Margin = new Thickness(0, 6, 0, 0) });
         panel.Children.Add(colorRow);
@@ -888,42 +923,75 @@ public partial class SettingsWindow : Window
         string? renamingDesignId = null;
         var isCommittingRename = false;
 
+        // FP11 — своя иконка (Id найден среди CustomTrayIcons) рендерится из
+        // файла, без параметрического цвета; иначе — прежняя логика встроенной
+        // векторной формы.
         void ApplyLiveIcon()
         {
-            if (!Enum.TryParse<TrayIconDesign>(_traySettings.TrayIconDesignId, out var design))
+            var customIcon = _traySettings.CustomTrayIcons.FirstOrDefault(c => c.Id == _traySettings.TrayIconDesignId);
+            var scale = _traySettings.GetTrayIconScale(_traySettings.TrayIconDesignId);
+
+            System.Drawing.Icon icon;
+            if (customIcon is not null)
             {
-                design = TrayIconDesign.Spokes;
+                icon = TrayIconRenderer.RenderCustom(CustomTrayIconStorage.GetFilePath(customIcon), scale);
+            }
+            else
+            {
+                if (!Enum.TryParse<TrayIconDesign>(_traySettings.TrayIconDesignId, out var design))
+                {
+                    design = TrayIconDesign.Spokes;
+                }
+
+                var color = System.Drawing.ColorTranslator.FromHtml(_traySettings.TrayIconColorHex);
+                icon = TrayIconRenderer.Render(design, color, scale);
             }
 
-            var scale = _traySettings.GetTrayIconScale(_traySettings.TrayIconDesignId);
-            var color = System.Drawing.ColorTranslator.FromHtml(_traySettings.TrayIconColorHex);
-            var icon = TrayIconRenderer.Render(design, color, scale);
             _trayService?.SetIcon(icon);
             _traySettingsStore.Save(_traySettings);
         }
 
-        // Формы, ещё не встречавшиеся в TrayIconDesignOrder (новые, добавленные уже
-        // после того как порядок сохранился), уходят в конец в порядке каталога —
-        // так список остаётся стабильным при добавлении новых форм и не требует
+        // Формы/свои иконки, ещё не встречавшиеся в TrayIconDesignOrder (новые,
+        // добавленные уже после того как порядок сохранился), уходят в конец —
+        // сначала встроенные формы в порядке каталога, потом свои иконки в
+        // порядке добавления — так список остаётся стабильным и не требует
         // отдельной миграции сохранённых настроек.
-        List<TrayIconDesignOption> GetOrderedDesigns()
+        List<TrayIconCard> GetOrderedIcons()
         {
-            var byId = TrayIconCatalog.Designs.ToDictionary(o => o.Design.ToString());
-            var ordered = new List<TrayIconDesignOption>();
+            var byId = new Dictionary<string, TrayIconCard>();
+            foreach (var option in TrayIconCatalog.Designs)
+            {
+                var id = option.Design.ToString();
+                byId[id] = new TrayIconCard(id, option.DisplayName, false, null);
+            }
 
+            foreach (var custom in _traySettings.CustomTrayIcons)
+            {
+                byId[custom.Id] = new TrayIconCard(custom.Id, custom.DisplayName, true, custom);
+            }
+
+            var ordered = new List<TrayIconCard>();
             foreach (var id in _traySettings.TrayIconDesignOrder)
             {
-                if (byId.Remove(id, out var option))
+                if (byId.Remove(id, out var card))
                 {
-                    ordered.Add(option);
+                    ordered.Add(card);
                 }
             }
 
             foreach (var option in TrayIconCatalog.Designs)
             {
-                if (byId.ContainsKey(option.Design.ToString()))
+                if (byId.TryGetValue(option.Design.ToString(), out var card))
                 {
-                    ordered.Add(option);
+                    ordered.Add(card);
+                }
+            }
+
+            foreach (var custom in _traySettings.CustomTrayIcons)
+            {
+                if (byId.TryGetValue(custom.Id, out var card))
+                {
+                    ordered.Add(card);
                 }
             }
 
@@ -932,7 +1000,7 @@ public partial class SettingsWindow : Window
 
         void MoveDesign(string designId, int direction)
         {
-            var orderedIds = GetOrderedDesigns().Select(o => o.Design.ToString()).ToList();
+            var orderedIds = GetOrderedIcons().Select(o => o.Id).ToList();
             var index = orderedIds.IndexOf(designId);
             var newIndex = index + direction;
             if (newIndex < 0 || newIndex >= orderedIds.Count)
@@ -950,23 +1018,30 @@ public partial class SettingsWindow : Window
         {
             designGallery.Children.Clear();
             var color = System.Drawing.ColorTranslator.FromHtml(_traySettings.TrayIconColorHex);
-            var orderedDesigns = GetOrderedDesigns();
+            var orderedIcons = GetOrderedIcons();
+            // FP11 — пересчитывается каждый раз (не один раз при построении), т.к.
+            // с добавлением/удалением своих иконок общее число карточек меняется.
+            designGallery.Columns = ComputeOptimalColumns(orderedIcons.Count, maxDesignColumns);
 
-            for (var designIndex = 0; designIndex < orderedDesigns.Count; designIndex++)
+            for (var designIndex = 0; designIndex < orderedIcons.Count; designIndex++)
             {
-                var option = orderedDesigns[designIndex];
-                var designId = option.Design.ToString();
+                var iconCard = orderedIcons[designIndex];
+                var designId = iconCard.Id;
                 var isSelected = designId == _traySettings.TrayIconDesignId;
                 var scale = _traySettings.GetTrayIconScale(designId);
-                var displayName = _traySettings.TrayIconDesignNameOverrides.TryGetValue(designId, out var custom)
-                    ? custom
-                    : option.DisplayName;
+                var displayName = _traySettings.TrayIconDesignNameOverrides.TryGetValue(designId, out var nameOverride)
+                    ? nameOverride
+                    : iconCard.BaseDisplayName;
 
                 var preview = new Image
                 {
                     Width = 32,
                     Height = 32,
-                    Source = TrayIconRenderer.RenderPreview(option.Design, color, scale),
+                    // FP11 — своя иконка рендерится из файла (без параметрического
+                    // цвета — тот действует только на встроенные векторные формы).
+                    Source = iconCard.IsCustom
+                        ? TrayIconRenderer.RenderCustomPreview(CustomTrayIconStorage.GetFilePath(iconCard.Custom!), scale)
+                        : TrayIconRenderer.RenderPreview(Enum.Parse<TrayIconDesign>(designId), color, scale),
                 };
 
                 Control nameControl;
@@ -989,28 +1064,21 @@ public partial class SettingsWindow : Window
                 }
                 else
                 {
+                    // FP11 — переименование и удаление переехали в контекстное меню
+                    // по правому клику (см. card.ContextMenu ниже) — раньше карандаш
+                    // и крестик были зажаты в один узкий ряд с именем ("слишком
+                    // маленькая кнопка удаления", по фидбеку пользователя). Сама
+                    // карточка теперь показывает только имя, без иконок-кнопок.
                     var nameText = new TextBlock
                     {
                         Text = displayName,
                         FontSize = 10,
-                        MaxWidth = 56,
+                        MaxWidth = 68,
+                        TextAlignment = Avalonia.Media.TextAlignment.Center,
                         TextTrimming = Avalonia.Media.TextTrimming.CharacterEllipsis,
                     };
                     ToolTip.SetTip(nameText, displayName);
-
-                    var pencil = new TextBlock { Text = "✎", FontSize = 9, Foreground = mutedBrush, Cursor = handCursor };
-                    ToolTip.SetTip(pencil, "Переименовать");
-                    pencil.PointerPressed += (_, e) =>
-                    {
-                        e.Handled = true;
-                        renamingDesignId = designId;
-                        RefreshDesignGallery();
-                    };
-
-                    var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3, HorizontalAlignment = HorizontalAlignment.Center };
-                    nameRow.Children.Add(nameText);
-                    nameRow.Children.Add(pencil);
-                    nameControl = nameRow;
+                    nameControl = nameText;
                 }
 
                 var scaleText = new TextBlock { Text = $"{scale}%", FontSize = 9, Foreground = mutedBrush };
@@ -1018,7 +1086,7 @@ public partial class SettingsWindow : Window
                 // Сортировка — кнопки "влево/вправо" вместо drag-and-drop: проще и
                 // надёжнее, тот же стиль, что и остальные явные кнопки в проекте
                 // (± у процента, крестик удаления цвета). Порядок — это индекс в
-                // GetOrderedDesigns(), а не визуальная позиция в WrapPanel (та может
+                // GetOrderedIcons(), а не визуальная позиция в WrapPanel (та может
                 // переноситься на новую строку независимо от логического порядка).
                 //
                 // Кнопки встроены в САМУ карточку по бокам (не отдельным рядом снизу):
@@ -1026,7 +1094,7 @@ public partial class SettingsWindow : Window
                 // (как угол карточки) — так они читаются как часть силуэта плитки, а
                 // не как отдельные наклеенные поверх кружки.
                 var canMoveLeft = designIndex > 0;
-                var canMoveRight = designIndex < orderedDesigns.Count - 1;
+                var canMoveRight = designIndex < orderedIcons.Count - 1;
                 var arrowActiveBg = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x1C, 0x80, 0x80, 0x80));
                 var arrowInactiveBg = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x08, 0x80, 0x80, 0x80));
 
@@ -1100,8 +1168,38 @@ public partial class SettingsWindow : Window
                     Child = cardLayout,
                 };
 
-                card.PointerPressed += (_, _) =>
+                // FP11 — переименование/удаление живут в контекстном меню по
+                // правому клику (по фидбеку пользователя — прежний крестик прямо
+                // на карточке был "слишком маленькой кнопкой"). "Удалить" только
+                // для своих иконок — у встроенных форм нет исходного файла.
+                var contextMenu = new ContextMenu();
+                var renameItem = new MenuItem { Header = "Переименовать" };
+                renameItem.Click += (_, _) =>
                 {
+                    renamingDesignId = designId;
+                    RefreshDesignGallery();
+                };
+                contextMenu.Items.Add(renameItem);
+
+                if (iconCard.IsCustom)
+                {
+                    var deleteItem = new MenuItem { Header = "Удалить" };
+                    deleteItem.Click += (_, _) => DeleteCustomIcon(iconCard.Custom!);
+                    contextMenu.Items.Add(deleteItem);
+                }
+
+                card.ContextMenu = contextMenu;
+
+                // Правый клик открывает контекстное меню (штатно, через ContextMenu
+                // выше) — здесь реагируем ТОЛЬКО на левую кнопку, иначе выбор формы
+                // менялся бы попутно и при правом клике тоже.
+                card.PointerPressed += (_, e) =>
+                {
+                    if (!e.GetCurrentPoint(card).Properties.IsLeftButtonPressed)
+                    {
+                        return;
+                    }
+
                     _traySettings.TrayIconDesignId = designId;
                     ApplyLiveIcon();
                     RefreshDesignGallery();
@@ -1131,6 +1229,67 @@ public partial class SettingsWindow : Window
                 designGallery.Children.Add(card);
             }
         }
+
+        // FP11 — удаляет саму запись + файл + все следы её id в остальных
+        // строково-ключевых словарях (Scale/NameOverrides/Order), тот же принцип
+        // очистки "хвостов", что уже применяется при удалении своего цвета иконки.
+        void DeleteCustomIcon(CustomTrayIcon icon)
+        {
+            _traySettings.CustomTrayIcons.Remove(icon);
+            _traySettings.TrayIconDesignOrder.Remove(icon.Id);
+            _traySettings.TrayIconScaleByDesign.Remove(icon.Id);
+            _traySettings.TrayIconDesignNameOverrides.Remove(icon.Id);
+            CustomTrayIconStorage.Delete(icon);
+
+            if (_traySettings.TrayIconDesignId == icon.Id)
+            {
+                // Удалили ВЫБРАННУЮ иконку — откатываемся на первую доступную
+                // карточку (та же логика восстановления, что и при удалении
+                // выбранного цвета в RefreshColorRow).
+                var fallback = GetOrderedIcons().FirstOrDefault();
+                _traySettings.TrayIconDesignId = fallback?.Id ?? TrayIconDesign.Spokes.ToString();
+                ApplyLiveIcon();
+            }
+            else
+            {
+                _traySettingsStore.Save(_traySettings);
+            }
+
+            RefreshDesignGallery();
+        }
+
+        importButton.Click += async (_, _) =>
+        {
+            _suppressDeactivateClose = true;
+            try
+            {
+                var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+                {
+                    Title = "Выберите изображение для иконки трея",
+                    AllowMultiple = false,
+                    FileTypeFilter = new[]
+                    {
+                        new FilePickerFileType("Изображения") { Patterns = ["*.png", "*.ico", "*.bmp", "*.jpg", "*.jpeg"] },
+                    },
+                });
+
+                var localPath = files.Count > 0 ? files[0].TryGetLocalPath() : null;
+                if (localPath is null)
+                {
+                    return;
+                }
+
+                var imported = CustomTrayIconStorage.Import(localPath);
+                _traySettings.CustomTrayIcons.Add(imported);
+                _traySettings.TrayIconDesignId = imported.Id;
+                ApplyLiveIcon();
+                RefreshDesignGallery();
+            }
+            finally
+            {
+                _suppressDeactivateClose = false;
+            }
+        };
 
         void CommitRename(string designId, string? newName)
         {

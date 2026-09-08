@@ -117,15 +117,30 @@ public partial class App : Application
                 }
             };
 
-            if (!Enum.TryParse<TrayIconDesign>(_traySettings.TrayIconDesignId, out var initialDesign))
-            {
-                initialDesign = TrayIconDesign.Spokes;
-            }
+            // FP11 — TrayIconDesignId может указывать либо на встроенную
+            // векторную форму (enum), либо на свою импортированную растровую
+            // иконку (см. TraySettings.CustomTrayIcons) — та же развилка, что и
+            // в SettingsWindow.ApplyLiveIcon.
+            var initialCustomIcon = _traySettings.CustomTrayIcons.FirstOrDefault(c => c.Id == _traySettings.TrayIconDesignId);
+            var initialScale = _traySettings.GetTrayIconScale(_traySettings.TrayIconDesignId);
 
-            var initialTrayIcon = TrayIconRenderer.Render(
-                initialDesign,
-                System.Drawing.ColorTranslator.FromHtml(_traySettings.TrayIconColorHex),
-                _traySettings.GetTrayIconScale(_traySettings.TrayIconDesignId));
+            System.Drawing.Icon initialTrayIcon;
+            if (initialCustomIcon is not null)
+            {
+                initialTrayIcon = TrayIconRenderer.RenderCustom(CustomTrayIconStorage.GetFilePath(initialCustomIcon), initialScale);
+            }
+            else
+            {
+                if (!Enum.TryParse<TrayIconDesign>(_traySettings.TrayIconDesignId, out var initialDesign))
+                {
+                    initialDesign = TrayIconDesign.Spokes;
+                }
+
+                initialTrayIcon = TrayIconRenderer.Render(
+                    initialDesign,
+                    System.Drawing.ColorTranslator.FromHtml(_traySettings.TrayIconColorHex),
+                    initialScale);
+            }
             _trayService = new TrayService(initialTrayIcon, "BrightnessControl");
             _trayService.ScrollNotches += OnScrollNotches;
             _trayService.RightClicked += e => Dispatcher.UIThread.Post(() => OpenSettingsWindow(e.CursorX, e.CursorY, desktop));

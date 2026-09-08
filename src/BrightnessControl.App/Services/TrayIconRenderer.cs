@@ -60,6 +60,66 @@ public static class TrayIconRenderer
         return new Avalonia.Media.Imaging.Bitmap(ms);
     }
 
+    // FP11 — пользовательская растровая иконка (см. TraySettings.CustomTrayIcons):
+    // без параметрического цвета, только масштаб (тот же диапазон 100-170%, что
+    // и у встроенных векторных форм) — картинка рисуется "как есть".
+    public static Icon RenderCustom(string filePath, int scalePercent)
+    {
+        using var bmp = RenderCustomBitmap(filePath, scalePercent, NativeSize);
+
+        var hIcon = bmp.GetHicon();
+        try
+        {
+            using var temp = Icon.FromHandle(hIcon);
+            using var ms = new MemoryStream();
+            temp.Save(ms);
+            ms.Position = 0;
+            return new Icon(ms);
+        }
+        finally
+        {
+            DestroyIcon(hIcon);
+        }
+    }
+
+    public static Avalonia.Media.Imaging.Bitmap RenderCustomPreview(string filePath, int scalePercent, int pixelSize = 32)
+    {
+        using var bmp = RenderCustomBitmap(filePath, scalePercent, pixelSize);
+        using var ms = new MemoryStream();
+        bmp.Save(ms, ImageFormat.Png);
+        ms.Position = 0;
+        return new Avalonia.Media.Imaging.Bitmap(ms);
+    }
+
+    private static Bitmap RenderCustomBitmap(string filePath, int scalePercent, int pixelSize)
+    {
+        var canvas = new Bitmap(pixelSize, pixelSize, PixelFormat.Format32bppArgb);
+        using var g = Graphics.FromImage(canvas);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        g.Clear(Color.Transparent);
+
+        using var source = Image.FromFile(filePath);
+
+        // При 100% масштабе картинка заполняет ~80% холста — тот же зрительный
+        // отступ от края, что и у встроенных векторных форм (те тоже не рисуются
+        // впритык к границе 64×64 viewbox) — дальше линейно растёт со scalePercent.
+        var basePortion = pixelSize * 0.8f;
+        var sourceMax = Math.Max(source.Width, source.Height);
+        var fitScale = sourceMax == 0 ? 1f : basePortion / sourceMax;
+        var finalScale = fitScale * (scalePercent / 100f);
+
+        var drawWidth = source.Width * finalScale;
+        var drawHeight = source.Height * finalScale;
+        var offsetX = (pixelSize - drawWidth) / 2f;
+        var offsetY = (pixelSize - drawHeight) / 2f;
+
+        g.DrawImage(source, offsetX, offsetY, drawWidth, drawHeight);
+
+        return canvas;
+    }
+
     private static Bitmap RenderBitmap(TrayIconDesign design, Color baseColor, int scalePercent, int pixelSize)
     {
         var bmp = new Bitmap(pixelSize, pixelSize, PixelFormat.Format32bppArgb);

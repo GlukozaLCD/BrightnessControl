@@ -44,6 +44,13 @@ public sealed class TraySettings
     public int GetTrayIconScale(string designId) =>
         TrayIconScaleByDesign.TryGetValue(designId, out var value) ? value : 135;
 
+    // FP11 — свои (растровые) иконки трея, импортированные пользователем извне
+    // — попадают в ТУ ЖЕ галерею и используют ТЕ ЖЕ Scale/NameOverrides/Order
+    // словари, что и встроенные формы (id генерируется как GUID, те словари уже
+    // строково-ключевые). Параметрический цвет для них не действует —
+    // TrayIconColorHex к ним не применяется, показываются "как есть".
+    public List<CustomTrayIcon> CustomTrayIcons { get; set; } = new();
+
     // Стиль HUD с процентом (скролл над иконкой трея) — по той же логике,
     // что и форма иконки трея выше: строка, а не голый enum, чтобы список
     // стилей можно было расширять без миграции сохранённых настроек.
