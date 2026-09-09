@@ -2,37 +2,37 @@ using System.Text.Json;
 
 namespace BrightnessControl.Core;
 
-public sealed class JsonFileScheduleStore : IScheduleStore
+public sealed class JsonFileAutomationStore : IAutomationStore
 {
     private readonly string _filePath;
 
-    public JsonFileScheduleStore(string? filePath = null)
+    public JsonFileAutomationStore(string? filePath = null)
     {
         _filePath = filePath ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "BrightnessControl",
-            "schedule.json");
+            "automation.json");
     }
 
-    public ScheduleSettings Load()
+    public AutomationSettings Load()
     {
         try
         {
             if (!File.Exists(_filePath))
             {
-                return new ScheduleSettings();
+                return new AutomationSettings();
             }
 
             var json = File.ReadAllText(_filePath);
-            return JsonSerializer.Deserialize<ScheduleSettings>(json) ?? new ScheduleSettings();
+            return JsonSerializer.Deserialize<AutomationSettings>(json) ?? new AutomationSettings();
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
         {
-            return new ScheduleSettings();
+            return new AutomationSettings();
         }
     }
 
-    public void Save(ScheduleSettings settings)
+    public void Save(AutomationSettings settings)
     {
         try
         {

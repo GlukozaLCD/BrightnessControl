@@ -3,7 +3,7 @@ using BrightnessControl.Core.Native;
 namespace BrightnessControl.Core;
 
 // Приглушение по бездействию — глобальное, разом для ВСЕХ мониторов (в отличие от
-// ScheduleRule/AppProfile, у него нет привязки к конкретным мониторам, см. FP6
+// правил AutomationEngine, у него нет привязки к конкретным мониторам, см. FP6
 // Фазу 1: так проще и предсказуемее для MVP). Простой определяется опросом
 // GetLastInputInfo — для него нет системного события, в отличие от
 // SetWinEventHook у ForegroundAppWatcher (FP5).
@@ -11,8 +11,7 @@ public sealed class IdleEngine : IDisposable
 {
     private readonly BrightnessController _controller;
     private readonly IIdleSettingsStore _store;
-    private readonly IScheduleStore _scheduleStore;
-    private readonly Func<MonitorInfo, int?>? _resolveActiveProfilePercent;
+    private readonly Func<MonitorInfo, int?>? _resolveAutomationPercent;
     private readonly Func<MonitorInfo, bool>? _isMonitorLocked;
     private readonly Dictionary<string, int> _preDimSnapshots = new();
     // Таймер работает на ThreadPool и НЕ ждёт завершения предыдущего тика — если
@@ -26,22 +25,20 @@ public sealed class IdleEngine : IDisposable
     private bool _isDimmed;
     private bool _disposed;
 
-    // Для живой индикации в GUI (см. FP6 Фазу 2) и чтобы ScheduleEngine (FP4) не
+    // Для живой индикации в GUI (см. FP6 Фазу 2) и чтобы AutomationEngine (FP10) не
     // "спорил" с приглушением, пока оно активно (см. композитный предикат в App.axaml.cs).
     public bool IsDimmed => _isDimmed;
 
     public IdleEngine(
         BrightnessController controller,
         IIdleSettingsStore? store = null,
-        IScheduleStore? scheduleStore = null,
-        Func<MonitorInfo, int?>? resolveActiveProfilePercent = null,
+        Func<MonitorInfo, int?>? resolveAutomationPercent = null,
         Func<MonitorInfo, bool>? isMonitorLocked = null,
         bool autoStart = true)
     {
         _controller = controller;
         _store = store ?? new JsonFileIdleSettingsStore();
-        _scheduleStore = scheduleStore ?? new JsonFileScheduleStore();
-        _resolveActiveProfilePercent = resolveActiveProfilePercent;
+        _resolveAutomationPercent = resolveAutomationPercent;
         _isMonitorLocked = isMonitorLocked;
 
         if (autoStart)
@@ -63,7 +60,7 @@ public sealed class IdleEngine : IDisposable
 
     // Публично и принимает время простоя явно — чтобы можно было проверить логику
     // без реального ожидания бездействия (см. тесты), по аналогии с
-    // ScheduleEngine.EvaluateAndApply(DateTime).
+    // AutomationEngine.EvaluateAndApplyAll(DateTime).
     public void EvaluateAndApply(TimeSpan idleDuration)
     {
         lock (_gate)
@@ -138,10 +135,9 @@ public sealed class IdleEngine : IDisposable
             var monitorKey = BrightnessController.GetMonitorKey(monitor);
             int? snapshot = _preDimSnapshots.TryGetValue(monitorKey, out var value) ? value : null;
 
-            // Приоритет восстановления, как и в FP4×FP5: активный профиль приложения
-            // важнее расписания, а оба важнее устаревшего "сырого" снимка до простоя.
-            var restoreValue = _resolveActiveProfilePercent?.Invoke(monitor)
-                ?? ComputeScheduleFallback(monitor)
+            // Приоритет восстановления: то, что автоматизация (FP10) хочет для
+            // монитора ПРЯМО СЕЙЧАС, важнее устаревшего "сырого" снимка до простоя.
+            var restoreValue = _resolveAutomationPercent?.Invoke(monitor)
                 ?? snapshot;
 
             if (restoreValue is not null)
@@ -156,28 +152,6 @@ public sealed class IdleEngine : IDisposable
         _controller.SetEachBrightness(targets);
         _preDimSnapshots.Clear();
         _isDimmed = false;
-    }
-
-    private int? ComputeScheduleFallback(MonitorInfo monitor)
-    {
-        var schedule = _scheduleStore.Load();
-        if (!schedule.IsEnabled || schedule.Rules.Count == 0)
-        {
-            return null;
-        }
-
-        var monitorKey = BrightnessController.GetMonitorKey(monitor);
-        var applicableRules = schedule.Rules
-            .Where(r => r.MonitorKeys.Count == 0 || r.MonitorKeys.Contains(monitorKey))
-            .OrderBy(r => r.Time)
-            .ToList();
-
-        if (applicableRules.Count == 0)
-        {
-            return null;
-        }
-
-        return ScheduleEngine.FindActiveRule(applicableRules, TimeOnly.FromDateTime(DateTime.Now)).Percent;
     }
 
     public void Dispose()

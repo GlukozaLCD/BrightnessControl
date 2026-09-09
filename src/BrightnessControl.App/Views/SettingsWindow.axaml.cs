@@ -22,7 +22,7 @@ public partial class SettingsWindow : Window
     private readonly AppSettingsStore _appSettingsStore;
     private readonly TraySettings _traySettings;
     private readonly TraySettingsStore _traySettingsStore;
-    private readonly AppProfileEngine? _appProfileEngine;
+    private readonly AutomationEngine? _automationEngine;
     private readonly IdleEngine? _idleEngine;
     private readonly AccentColorService? _accentColorService;
     private readonly TrayService? _trayService;
@@ -52,7 +52,7 @@ public partial class SettingsWindow : Window
         _appSettingsStore = null!;
         _traySettings = null!;
         _traySettingsStore = null!;
-        _appProfileEngine = null;
+        _automationEngine = null;
         _idleEngine = null;
         _accentColorService = null;
         _trayService = null;
@@ -66,7 +66,7 @@ public partial class SettingsWindow : Window
         AppSettingsStore appSettingsStore,
         TraySettings traySettings,
         TraySettingsStore traySettingsStore,
-        AppProfileEngine? appProfileEngine,
+        AutomationEngine? automationEngine,
         IdleEngine? idleEngine,
         AccentColorService? accentColorService,
         TrayService? trayService,
@@ -77,7 +77,7 @@ public partial class SettingsWindow : Window
         _appSettingsStore = appSettingsStore;
         _traySettings = traySettings;
         _traySettingsStore = traySettingsStore;
-        _appProfileEngine = appProfileEngine;
+        _automationEngine = automationEngine;
         _idleEngine = idleEngine;
         _accentColorService = accentColorService;
         _trayService = trayService;
@@ -238,8 +238,7 @@ public partial class SettingsWindow : Window
             }),
             new("Автоматизация", new List<NavSubcategory>
             {
-                new("Расписание", BuildScheduleTab),
-                new("Профили приложений", BuildAppProfilesTab),
+                new("Правила", BuildAutomationTab),
                 new("Простой", BuildIdleTab),
             }),
         };
@@ -1438,13 +1437,344 @@ public partial class SettingsWindow : Window
         return panel;
     }
 
-    private void BuildScheduleTab(StackPanel root)
+    // Минуты (0..1440) → "HH:mm" — НЕ через TimeOnly, потому что тот не может
+    // представить "24:00" (см. TimeSegment.cs и PLAN_FP10 Фаза 4).
+    private static string FormatMinutesOfDay(int minutes)
     {
-        var scheduleStore = new JsonFileScheduleStore();
-        var scheduleSettings = scheduleStore.Load();
+        minutes = Math.Clamp(minutes, 0, 1440);
+        return $"{minutes / 60:00}:{minutes % 60:00}";
+    }
+
+    private static string FormatTimeCondition(AutomationRule rule)
+    {
+        if (rule.IsTimeAlwaysActive)
+        {
+            return "весь день";
+        }
+
+        return string.Join(", ", rule.TimeSegments
+            .OrderBy(s => s.StartMinute)
+            .Select(s => $"{FormatMinutesOfDay(s.StartMinute)}–{FormatMinutesOfDay(s.EndMinute)}"));
+    }
+
+    // FP10 Фаза 4 — линейка с отрезками вместо числовых степперов часа/минуты.
+    // Схема жестов: ЛКМ на пустом месте + протяжка создаёт отрезок (простой клик
+    // без протяжки — час по умолчанию); ЛКМ по краю (~10px зона у засечки) тянет
+    // этот край; ЛКМ по середине двигает отрезок целиком; ПКМ удаляет отрезок.
+    // Отрезки, коснувшиеся/пересёкшиеся в процессе, сливаются в один при
+    // отпускании кнопки (см. TimeSegment.Normalize). Явного переключателя "весь
+    // день" нет намеренно — это просто отрезок, растянутый на всю линейку (кнопка
+    // "Растянуть на все сутки" — ярлык, а не особый режим), см. PLAN_FP10 Фаза 4.
+    private (Control Widget, Func<(List<TimeSegment> Segments, bool IsAlwaysActive)> GetValue, Action<IEnumerable<TimeSegment>> SetValue) BuildTimeSegmentsRuler(
+        IEnumerable<TimeSegment> initialSegments)
+    {
+        const int Step = 15;
+        const double EdgePx = 10;
+
+        var segments = initialSegments.Select(s => (Start: s.StartMinute, End: s.EndMinute)).ToList();
+
+        var readoutText = new TextBlock { FontWeight = Avalonia.Media.FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center };
+        var fillDayButton = new Button { Content = "Растянуть на все сутки" };
+
+        var readoutRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        Grid.SetColumn(readoutText, 0);
+        Grid.SetColumn(fillDayButton, 1);
+        readoutRow.Children.Add(readoutText);
+        readoutRow.Children.Add(fillDayButton);
+
+        // Background=Transparent обязателен — без него Canvas не участвует в
+        // хит-тесте на своей ПУСТОЙ площади (только там, где реально есть дочерний
+        // элемент с фоном, т.е. уже нарисованный отрезок), и клик по свободному
+        // месту линейки (создание нового отрезка) просто не доходит до обработчика
+        // PointerPressed ниже — тот же класс проблемы, что уже был у StackPanel
+        // в AddSliderRow (см. её комментарий про "хит-тест за пределами детей").
+        var canvas = new Canvas { Height = 44, Background = Avalonia.Media.Brushes.Transparent };
+        var trackBorder = new Border
+        {
+            CornerRadius = new CornerRadius(6),
+            BorderThickness = new Thickness(1),
+            ClipToBounds = true,
+            Child = canvas,
+            Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Cross),
+        };
+        trackBorder.Bind(Border.BackgroundProperty, this.GetResourceObservable("AppSurfaceSunken"));
+        trackBorder.Bind(Border.BorderBrushProperty, this.GetResourceObservable("AppLine"));
+
+        var ticksRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*,*,*,*"), Margin = new Thickness(0, 4, 0, 0) };
+        var tickLabels = new[] { "00:00", "06:00", "12:00", "18:00", "24:00" };
+        for (var col = 0; col < tickLabels.Length; col++)
+        {
+            var tick = new TextBlock
+            {
+                Text = tickLabels[col],
+                FontSize = 11,
+                HorizontalAlignment = col == 0 ? HorizontalAlignment.Left : col == tickLabels.Length - 1 ? HorizontalAlignment.Right : HorizontalAlignment.Center,
+            };
+            tick.Bind(TextBlock.ForegroundProperty, this.GetResourceObservable("AppMuted"));
+            Grid.SetColumn(tick, col);
+            ticksRow.Children.Add(tick);
+        }
+
+        var widget = new StackPanel { Spacing = 6 };
+        widget.Children.Add(readoutRow);
+        widget.Children.Add(trackBorder);
+        widget.Children.Add(ticksRow);
+
+        int Snap(double minutes) => (int)(Math.Round(minutes / Step) * Step);
+
+        int XToMinutes(double x, double width)
+        {
+            var frac = Math.Clamp(x / width, 0, 1);
+            return Math.Clamp(Snap(frac * 1440), 0, 1440);
+        }
+
+        void Describe()
+        {
+            if (segments.Count == 0)
+            {
+                readoutText.Text = "(ничего не выбрано)";
+            }
+            else if (segments.Count == 1 && segments[0].Start <= 0 && segments[0].End >= 1440)
+            {
+                readoutText.Text = "Весь день";
+            }
+            else
+            {
+                readoutText.Text = string.Join(", ", segments
+                    .OrderBy(s => s.Start)
+                    .Select(s => $"{FormatMinutesOfDay(s.Start)}–{FormatMinutesOfDay(s.End)}"));
+            }
+        }
+
+        void Render()
+        {
+            canvas.Children.Clear();
+            var width = canvas.Bounds.Width;
+            var height = canvas.Bounds.Height > 0 ? canvas.Bounds.Height : 44;
+
+            if (width > 0)
+            {
+                foreach (var seg in segments.OrderBy(s => s.Start))
+                {
+                    var left = seg.Start / 1440.0 * width;
+                    var segWidth = Math.Max(3, (seg.End - seg.Start) / 1440.0 * width);
+
+                    var segBorder = new Border
+                    {
+                        Width = segWidth,
+                        Height = height,
+                        BorderThickness = new Thickness(2, 0, 2, 0),
+                    };
+                    segBorder.Bind(Border.BackgroundProperty, this.GetResourceObservable("AppAccentBackgroundBrush"));
+                    segBorder.Bind(Border.BorderBrushProperty, this.GetResourceObservable("AppAccentBrush"));
+                    Canvas.SetLeft(segBorder, left);
+                    Canvas.SetTop(segBorder, 0);
+                    canvas.Children.Add(segBorder);
+                }
+            }
+
+            Describe();
+        }
+
+        (string Type, int Index)? HitTest(double x, double width)
+        {
+            for (var i = 0; i < segments.Count; i++)
+            {
+                var (s, en) = segments[i];
+                var px1 = s / 1440.0 * width;
+                var px2 = en / 1440.0 * width;
+                var wide = (px2 - px1) > EdgePx * 2;
+                if (x >= px1 - EdgePx && x <= px1 + EdgePx && wide)
+                {
+                    return ("edge-left", i);
+                }
+                if (x >= px2 - EdgePx && x <= px2 + EdgePx && wide)
+                {
+                    return ("edge-right", i);
+                }
+                if (x > px1 && x < px2)
+                {
+                    return ("move", i);
+                }
+            }
+            return null;
+        }
+
+        void NormalizeAndSync()
+        {
+            var (normalized, isAlwaysActive) = TimeSegment.Normalize(
+                segments.Select(s => new TimeSegment { StartMinute = s.Start, EndMinute = s.End }));
+            segments = isAlwaysActive
+                ? new List<(int Start, int End)> { (0, 1440) }
+                : normalized.Select(s => (s.StartMinute, s.EndMinute)).ToList();
+            Render();
+        }
+
+        void BeginEditExisting((string Type, int Index) hit, PointerPressedEventArgs e)
+        {
+            e.Pointer.Capture(canvas);
+            var (origStart, origEnd) = segments[hit.Index];
+            var startX = e.GetCurrentPoint(canvas).Position.X;
+
+            void Move(object? _, PointerEventArgs ev)
+            {
+                var width = canvas.Bounds.Width;
+                if (width <= 0)
+                {
+                    return;
+                }
+
+                var x = ev.GetCurrentPoint(canvas).Position.X;
+                var mins = XToMinutes(x, width);
+
+                if (hit.Type == "edge-left")
+                {
+                    var newStart = Math.Max(0, Math.Min(mins, segments[hit.Index].End - Step));
+                    segments[hit.Index] = (newStart, segments[hit.Index].End);
+                }
+                else if (hit.Type == "edge-right")
+                {
+                    var newEnd = Math.Min(1440, Math.Max(mins, segments[hit.Index].Start + Step));
+                    segments[hit.Index] = (segments[hit.Index].Start, newEnd);
+                }
+                else
+                {
+                    var deltaFrac = (x - startX) / width;
+                    var deltaMin = Snap(deltaFrac * 1440);
+                    var duration = origEnd - origStart;
+                    var ns = Math.Clamp(origStart + deltaMin, 0, 1440 - duration);
+                    segments[hit.Index] = (ns, ns + duration);
+                }
+                Render();
+            }
+
+            void Up(object? _, PointerReleasedEventArgs ev)
+            {
+                canvas.PointerMoved -= Move;
+                canvas.PointerReleased -= Up;
+                e.Pointer.Capture(null);
+                NormalizeAndSync();
+            }
+
+            canvas.PointerMoved += Move;
+            canvas.PointerReleased += Up;
+        }
+
+        void BeginCreateNew(PointerPressedEventArgs e, double anchorX, double width)
+        {
+            e.Pointer.Capture(canvas);
+            var anchor = XToMinutes(anchorX, width);
+            var index = segments.Count;
+            segments.Add((anchor, Math.Min(1440, anchor + Step)));
+            var dragged = false;
+            Render();
+
+            void Move(object? _, PointerEventArgs ev)
+            {
+                dragged = true;
+                var w = canvas.Bounds.Width;
+                if (w <= 0)
+                {
+                    return;
+                }
+
+                var cur = XToMinutes(ev.GetCurrentPoint(canvas).Position.X, w);
+                var start = Math.Max(0, Math.Min(anchor, cur));
+                var end = Math.Min(1440, Math.Max(anchor, cur));
+                if (end - start < Step)
+                {
+                    end = Math.Min(1440, start + Step);
+                }
+                segments[index] = (start, end);
+                Render();
+            }
+
+            void Up(object? _, PointerReleasedEventArgs ev)
+            {
+                canvas.PointerMoved -= Move;
+                canvas.PointerReleased -= Up;
+                e.Pointer.Capture(null);
+                if (!dragged)
+                {
+                    var start = Math.Max(0, anchor - 30);
+                    segments[index] = (start, Math.Min(1440, start + 60));
+                }
+                NormalizeAndSync();
+            }
+
+            canvas.PointerMoved += Move;
+            canvas.PointerReleased += Up;
+        }
+
+        canvas.PointerPressed += (_, e) =>
+        {
+            var width = canvas.Bounds.Width;
+            if (width <= 0)
+            {
+                return;
+            }
+
+            var point = e.GetCurrentPoint(canvas);
+            var x = point.Position.X;
+
+            if (point.Properties.IsRightButtonPressed)
+            {
+                e.Handled = true;
+                var hit = HitTest(x, width);
+                if (hit is { } h)
+                {
+                    segments.RemoveAt(h.Index);
+                    NormalizeAndSync();
+                }
+                return;
+            }
+
+            if (!point.Properties.IsLeftButtonPressed)
+            {
+                return;
+            }
+
+            var editHit = HitTest(x, width);
+            if (editHit is { } eh)
+            {
+                BeginEditExisting(eh, e);
+            }
+            else
+            {
+                BeginCreateNew(e, x, width);
+            }
+        };
+
+        fillDayButton.Click += (_, _) =>
+        {
+            segments = new List<(int Start, int End)> { (0, 1440) };
+            Render();
+        };
+
+        canvas.SizeChanged += (_, _) => Render();
+        Render();
+
+        (List<TimeSegment> Segments, bool IsAlwaysActive) GetValue() => TimeSegment.Normalize(
+            segments.Select(s => new TimeSegment { StartMinute = s.Start, EndMinute = s.End }));
+
+        // Нужен для редактирования уже созданного правила — подгружает его отрезки
+        // в уже существующий виджет вместо пересоздания (см. BuildAutomationTab).
+        void SetValue(IEnumerable<TimeSegment> newSegments)
+        {
+            segments = newSegments.Select(s => (Start: s.StartMinute, End: s.EndMinute)).ToList();
+            Render();
+        }
+
+        return (widget, GetValue, SetValue);
+    }
+
+    private void BuildAutomationTab(StackPanel root)
+    {
+        var automationStore = new JsonFileAutomationStore();
+        var automationSettings = automationStore.Load();
         var monitorNames = new MonitorNameStore().Load();
 
-        var enabledCheckBox = new CheckBox { Content = "Включить расписание", IsChecked = scheduleSettings.IsEnabled };
+        var enabledCheckBox = new CheckBox { Content = "Включить автоматизацию", IsChecked = automationSettings.IsEnabled };
         root.Children.Add(enabledCheckBox);
 
         root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
@@ -1455,37 +1785,30 @@ public partial class SettingsWindow : Window
         void RefreshActiveNow()
         {
             activeNowPanel.Children.Clear();
-            var current = scheduleStore.Load();
+            var current = automationStore.Load();
 
             if (!current.IsEnabled || current.Rules.Count == 0)
             {
                 activeNowPanel.Children.Add(new TextBlock
                 {
-                    Text = "Расписание выключено или правил ещё нет.",
+                    Text = "Автоматизация выключена или правил ещё нет.",
                     FontStyle = Avalonia.Media.FontStyle.Italic,
                 });
                 return;
             }
 
-            var orderedRules = current.Rules.OrderBy(r => r.Time).ToList();
-            var timeOfDay = TimeOnly.FromDateTime(DateTime.Now);
-
             foreach (var monitor in _controller.Monitors)
             {
-                var monitorKey = BrightnessController.GetMonitorKey(monitor);
-                var applicable = orderedRules
-                    .Where(r => r.MonitorKeys.Count == 0 || r.MonitorKeys.Contains(monitorKey))
-                    .ToList();
-
-                if (applicable.Count == 0)
+                var active = _automationEngine?.ResolveActiveRuleForMonitor(monitor);
+                if (active is null)
                 {
                     continue;
                 }
 
-                var active = ScheduleEngine.FindActiveRule(applicable, timeOfDay);
+                var ruleLabel = string.IsNullOrWhiteSpace(active.Name) ? "(без названия)" : active.Name;
                 activeNowPanel.Children.Add(new TextBlock
                 {
-                    Text = $"{MonitorLabel.Format(monitor, monitorNames)}: {active.Time:HH:mm} → {active.Percent}%",
+                    Text = $"{MonitorLabel.Format(monitor, monitorNames)}: «{ruleLabel}» → {active.Percent}%",
                 });
             }
 
@@ -1493,7 +1816,7 @@ public partial class SettingsWindow : Window
             {
                 activeNowPanel.Children.Add(new TextBlock
                 {
-                    Text = "Ни для одного монитора нет применимых правил.",
+                    Text = "Ни для одного монитора нет активных правил прямо сейчас.",
                     FontStyle = Avalonia.Media.FontStyle.Italic,
                 });
             }
@@ -1501,8 +1824,8 @@ public partial class SettingsWindow : Window
 
         enabledCheckBox.IsCheckedChanged += (_, _) =>
         {
-            scheduleSettings.IsEnabled = enabledCheckBox.IsChecked ?? true;
-            scheduleStore.Save(scheduleSettings);
+            automationSettings.IsEnabled = enabledCheckBox.IsChecked ?? true;
+            automationStore.Save(automationSettings);
             RefreshActiveNow();
         };
 
@@ -1513,67 +1836,135 @@ public partial class SettingsWindow : Window
 
         root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
         root.Children.Add(new TextBlock { Text = "Правила", FontWeight = Avalonia.Media.FontWeight.Bold });
-
-        // Заголовки колонок — раньше их не было, и сразу не было понятно, что
-        // означает каждое число в строке правила (FP9 Фаза 5: форма расписания
-        // была "странной и непонятной").
-        var rulesHeaderRow = new Grid { ColumnDefinitions = new ColumnDefinitions("60,75,*,Auto") };
-        var rulesHeaderStyle = new Action<TextBlock>(t => t.FontWeight = Avalonia.Media.FontWeight.Bold);
-        var timeHeader = new TextBlock { Text = "Время" };
-        var percentHeader = new TextBlock { Text = "Яркость" };
-        var scopeHeader = new TextBlock { Text = "Мониторы" };
-        rulesHeaderStyle(timeHeader);
-        rulesHeaderStyle(percentHeader);
-        rulesHeaderStyle(scopeHeader);
-        Grid.SetColumn(timeHeader, 0);
-        Grid.SetColumn(percentHeader, 1);
-        Grid.SetColumn(scopeHeader, 2);
-        rulesHeaderRow.Children.Add(timeHeader);
-        rulesHeaderRow.Children.Add(percentHeader);
-        rulesHeaderRow.Children.Add(scopeHeader);
-        root.Children.Add(rulesHeaderRow);
+        root.Children.Add(new TextBlock
+        {
+            Text = "Порядок в списке имеет значение — им разрешаются конфликты между правилами без явного приоритета (см. кнопки \"▲\"/\"▼\").",
+            FontStyle = Avalonia.Media.FontStyle.Italic,
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+        });
 
         var rulesListPanel = new StackPanel { Spacing = 6 };
+
+        // Форма "Новое правило" ниже переиспользуется и для редактирования (см.
+        // PLAN_FP10) — editingRule != null, пока форма заполнена данными
+        // существующего правила. loadRuleIntoForm объявлен здесь как nullable-
+        // делегат и присваивается реальной реализацией ПОЗЖЕ, после того как
+        // поля формы объявлены (та же причина, что и раньше с CS0165 у FP11 —
+        // RefreshRulesList вызывается раньше, чем форма построена).
+        AutomationRule? editingRule = null;
+        Action<AutomationRule>? loadRuleIntoForm = null;
 
         void RefreshRulesList()
         {
             rulesListPanel.Children.Clear();
 
-            foreach (var rule in scheduleSettings.Rules.OrderBy(r => r.Time).ToList())
+            for (var i = 0; i < automationSettings.Rules.Count; i++)
             {
-                var scopeText = rule.MonitorKeys.Count == 0
-                    ? "все мониторы"
-                    : string.Join(", ", rule.MonitorKeys.Select(key =>
-                        _controller.Monitors.FirstOrDefault(m => BrightnessController.GetMonitorKey(m) == key) is { } found
-                            ? MonitorLabel.Format(found, monitorNames)
-                            : key));
+                var rule = automationSettings.Rules[i];
+                var index = i;
 
-                var row = new Grid { ColumnDefinitions = new ColumnDefinitions("60,75,*,Auto") };
-                var timeText = new TextBlock { Text = $"{rule.Time:HH:mm}", VerticalAlignment = VerticalAlignment.Center };
-                var percentText = new TextBlock { Text = $"{rule.Percent}%", VerticalAlignment = VerticalAlignment.Center };
-                var scopeLabel = new TextBlock { Text = scopeText, VerticalAlignment = VerticalAlignment.Center, TextWrapping = Avalonia.Media.TextWrapping.Wrap };
+                var conditionParts = new List<string>();
+                if (rule.HasTimeCondition)
+                {
+                    conditionParts.Add(FormatTimeCondition(rule));
+                }
+                if (rule.HasProcessCondition)
+                {
+                    var matchTypeText = rule.ProcessMatchType == AppMatchType.ProcessName ? "процесс" : "заголовок";
+                    conditionParts.Add($"{matchTypeText} «{rule.ProcessMatchValue}»");
+                }
+                var conditionsText = conditionParts.Count == 2
+                    ? string.Join(rule.Combinator == AutomationCombinator.And ? " И " : " ИЛИ ", conditionParts)
+                    : conditionParts.FirstOrDefault() ?? "(нет условий)";
+
+                var scopeText = rule.HasProcessCondition
+                    ? "монитор с окном"
+                    : rule.MonitorKeys.Count == 0
+                        ? "все мониторы"
+                        : string.Join(", ", rule.MonitorKeys.Select(key =>
+                            _controller.Monitors.FirstOrDefault(m => BrightnessController.GetMonitorKey(m) == key) is { } found
+                                ? MonitorLabel.Format(found, monitorNames)
+                                : key));
+
+                var priorityText = rule.Priority is not null ? $"приоритет {rule.Priority}" : null;
+
+                var card = new Border
+                {
+                    BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x40, 0x80, 0x80, 0x80)),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(4),
+                    Padding = new Thickness(10),
+                };
+                var cardPanel = new StackPanel { Spacing = 2 };
+                card.Child = cardPanel;
+
+                var titleRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto,Auto,Auto,Auto") };
+                var nameText = new TextBlock
+                {
+                    Text = string.IsNullOrWhiteSpace(rule.Name) ? "(без названия)" : rule.Name,
+                    FontWeight = Avalonia.Media.FontWeight.Bold,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                var enabledToggle = new CheckBox { Content = "вкл", IsChecked = rule.IsEnabled, VerticalAlignment = VerticalAlignment.Center };
+                var editButton = new Button { Content = "Изменить" };
+                var moveUpButton = new Button { Content = "▲", IsEnabled = index > 0 };
+                var moveDownButton = new Button { Content = "▼", IsEnabled = index < automationSettings.Rules.Count - 1 };
                 var removeButton = new Button { Content = "Удалить" };
+
+                editButton.Click += (_, _) => loadRuleIntoForm?.Invoke(rule);
+                moveUpButton.Click += (_, _) =>
+                {
+                    (automationSettings.Rules[index - 1], automationSettings.Rules[index]) =
+                        (automationSettings.Rules[index], automationSettings.Rules[index - 1]);
+                    automationStore.Save(automationSettings);
+                    RefreshRulesList();
+                    RefreshActiveNow();
+                };
+                moveDownButton.Click += (_, _) =>
+                {
+                    (automationSettings.Rules[index + 1], automationSettings.Rules[index]) =
+                        (automationSettings.Rules[index], automationSettings.Rules[index + 1]);
+                    automationStore.Save(automationSettings);
+                    RefreshRulesList();
+                    RefreshActiveNow();
+                };
+                enabledToggle.IsCheckedChanged += (_, _) =>
+                {
+                    rule.IsEnabled = enabledToggle.IsChecked ?? true;
+                    automationStore.Save(automationSettings);
+                    RefreshActiveNow();
+                };
                 removeButton.Click += (_, _) =>
                 {
-                    scheduleSettings.Rules.Remove(rule);
-                    scheduleStore.Save(scheduleSettings);
+                    automationSettings.Rules.Remove(rule);
+                    automationStore.Save(automationSettings);
                     RefreshRulesList();
                     RefreshActiveNow();
                 };
 
-                Grid.SetColumn(timeText, 0);
-                Grid.SetColumn(percentText, 1);
-                Grid.SetColumn(scopeLabel, 2);
-                Grid.SetColumn(removeButton, 3);
-                row.Children.Add(timeText);
-                row.Children.Add(percentText);
-                row.Children.Add(scopeLabel);
-                row.Children.Add(removeButton);
+                Grid.SetColumn(nameText, 0);
+                Grid.SetColumn(enabledToggle, 1);
+                Grid.SetColumn(editButton, 2);
+                Grid.SetColumn(moveUpButton, 3);
+                Grid.SetColumn(moveDownButton, 4);
+                Grid.SetColumn(removeButton, 5);
+                titleRow.Children.Add(nameText);
+                titleRow.Children.Add(enabledToggle);
+                titleRow.Children.Add(editButton);
+                titleRow.Children.Add(moveUpButton);
+                titleRow.Children.Add(moveDownButton);
+                titleRow.Children.Add(removeButton);
+                cardPanel.Children.Add(titleRow);
 
-                rulesListPanel.Children.Add(row);
+                var detailText = priorityText is null
+                    ? $"{conditionsText} → {rule.Percent}% · {scopeText}"
+                    : $"{conditionsText} → {rule.Percent}% · {scopeText} · {priorityText}";
+                cardPanel.Children.Add(new TextBlock { Text = detailText, TextWrapping = Avalonia.Media.TextWrapping.Wrap });
+
+                rulesListPanel.Children.Add(card);
             }
 
-            if (scheduleSettings.Rules.Count == 0)
+            if (automationSettings.Rules.Count == 0)
             {
                 rulesListPanel.Children.Add(new TextBlock { Text = "(правил ещё нет)", FontStyle = Avalonia.Media.FontStyle.Italic });
             }
@@ -1584,9 +1975,8 @@ public partial class SettingsWindow : Window
 
         root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
 
-        // Визуально отделённая карточка для формы создания правила — раньше поля
-        // шли сплошным списком без границ, сливаясь со списком уже существующих
-        // правил выше (FP9 Фаза 5).
+        // Визуально отделённая карточка для формы создания правила — тот же приём,
+        // что раньше был у формы расписания (FP9 Фаза 5).
         var newRuleCard = new Border
         {
             BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x40, 0x80, 0x80, 0x80)),
@@ -1597,189 +1987,39 @@ public partial class SettingsWindow : Window
         var newRulePanel = new StackPanel { Spacing = 8 };
         newRuleCard.Child = newRulePanel;
 
-        newRulePanel.Children.Add(new TextBlock { Text = "Новое правило", FontWeight = Avalonia.Media.FontWeight.Bold });
+        var formTitleText = new TextBlock { Text = "Новое правило", FontWeight = Avalonia.Media.FontWeight.Bold };
+        newRulePanel.Children.Add(formTitleText);
 
-        // Крупные читаемые цифры "12:40" вместо NumericUpDown (тот оказался слишком
-        // узким — виден был почти только край со стрелочками, а не само число).
-        // Прокрутка колеса над часом/минутой — ±1 к целому числу; с зажатым Shift —
-        // точнее: над десятками ±10, над единицами ±1 (см. BuildScrollableTwoDigit).
-        var hour = 8;
-        var minute = 0;
-        var hourControl = BuildScrollableTwoDigit(() => hour, v => hour = v, 0, 23);
-        var minuteControl = BuildScrollableTwoDigit(() => minute, v => minute = v, 0, 59);
+        var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        nameRow.Children.Add(new TextBlock { Text = "Название:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
+        var nameInput = new TextBox { Width = 260, PlaceholderText = "например, «Вечер»" };
+        nameRow.Children.Add(nameInput);
+        newRulePanel.Children.Add(nameRow);
 
-        var timeRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        timeRow.Children.Add(new TextBlock { Text = "Время:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
-        timeRow.Children.Add(hourControl);
-        timeRow.Children.Add(new TextBlock { Text = ":", VerticalAlignment = VerticalAlignment.Center, FontSize = 18, FontWeight = Avalonia.Media.FontWeight.Bold });
-        timeRow.Children.Add(minuteControl);
-        newRulePanel.Children.Add(timeRow);
+        // --- Условие по времени: линейка с отрезками (см. PLAN_FP10 Фаза 4) —
+        // булево ("время попадает хотя бы в один отрезок"), комбинируется с
+        // условием по процессу через И/ИЛИ ниже. ---
+        var timeConditionCheckBox = new CheckBox { Content = "Условие по времени" };
+        newRulePanel.Children.Add(timeConditionCheckBox);
 
-        var percentRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        percentRow.Children.Add(new TextBlock { Text = "Яркость:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
-        var percentInput = BuildNumericStepper(0, 100, 80, "%");
-        percentRow.Children.Add(percentInput);
-        newRulePanel.Children.Add(percentRow);
-
-        var allMonitorsCheckBox = new CheckBox { Content = "Все мониторы", IsChecked = true };
-        newRulePanel.Children.Add(allMonitorsCheckBox);
-
-        // Список мониторов теперь виден ВСЕГДА (раньше прятался, пока не снять
-        // "Все мониторы" — не было понятно, что выбор вообще есть). Чекбокс "Все
-        // мониторы" просто отмечает/блокирует остальные, а не скрывает список.
-        var monitorCheckBoxes = new List<(MonitorInfo Monitor, CheckBox CheckBox)>();
-        var monitorsPickPanel = new StackPanel { Spacing = 4, Margin = new Thickness(20, 0, 0, 0) };
-        foreach (var monitor in _controller.Monitors)
+        var (timeRulerWidget, getTimeSegments, setTimeSegments) = BuildTimeSegmentsRuler(new[]
         {
-            var checkBox = new CheckBox { Content = MonitorLabel.Format(monitor, monitorNames), IsChecked = true, IsEnabled = false };
-            monitorCheckBoxes.Add((monitor, checkBox));
-            monitorsPickPanel.Children.Add(checkBox);
-        }
+            new TimeSegment { StartMinute = 22 * 60, EndMinute = 24 * 60 },
+            new TimeSegment { StartMinute = 0, EndMinute = 6 * 60 },
+        });
+        var timeRulerRow = new Border { Margin = new Thickness(20, 0, 0, 0), IsVisible = false, Child = timeRulerWidget };
+        newRulePanel.Children.Add(timeRulerRow);
 
-        allMonitorsCheckBox.IsCheckedChanged += (_, _) =>
-        {
-            var allSelected = allMonitorsCheckBox.IsChecked == true;
-            foreach (var (_, checkBox) in monitorCheckBoxes)
-            {
-                checkBox.IsEnabled = !allSelected;
-                if (allSelected)
-                {
-                    checkBox.IsChecked = true;
-                }
-            }
-        };
-        newRulePanel.Children.Add(monitorsPickPanel);
+        // --- Условие по процессу — та же машинерия подсказок/скрытия процессов,
+        // что раньше была у профилей приложений (FP5/FP9). ---
+        var processConditionCheckBox = new CheckBox { Content = "Условие по процессу" };
+        newRulePanel.Children.Add(processConditionCheckBox);
 
-        var addRuleButton = new Button { Content = "Добавить правило" };
-        addRuleButton.Click += (_, _) =>
-        {
-            var time = new TimeSpan(hour, minute, 0);
-            var scopeKeys = allMonitorsCheckBox.IsChecked == true
-                ? new List<string>()
-                : monitorCheckBoxes.Where(t => t.CheckBox.IsChecked == true).Select(t => BrightnessController.GetMonitorKey(t.Monitor)).ToList();
-
-            scheduleSettings.Rules.Add(new ScheduleRule
-            {
-                Time = TimeOnly.FromTimeSpan(time),
-                Percent = (int)(percentInput.Value ?? 80),
-                MonitorKeys = scopeKeys,
-            });
-            scheduleStore.Save(scheduleSettings);
-            RefreshRulesList();
-            RefreshActiveNow();
-        };
-        newRulePanel.Children.Add(addRuleButton);
-
-        root.Children.Add(newRuleCard);
-    }
-
-    private void BuildAppProfilesTab(StackPanel root)
-    {
-        var profileStore = new JsonFileAppProfileStore();
-        var profileSettings = profileStore.Load();
-        var monitorNames = new MonitorNameStore().Load();
-
-        var enabledCheckBox = new CheckBox { Content = "Включить профили приложений", IsChecked = profileSettings.IsEnabled };
-        root.Children.Add(enabledCheckBox);
-
-        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
-        root.Children.Add(new TextBlock { Text = "Сейчас активно", FontWeight = Avalonia.Media.FontWeight.Bold });
-        var activeNowPanel = new StackPanel { Spacing = 2 };
-        root.Children.Add(activeNowPanel);
-
-        void RefreshActiveNow()
-        {
-            activeNowPanel.Children.Clear();
-            var current = profileStore.Load();
-            var activeProfileId = _appProfileEngine?.ActiveProfileId;
-            var activeMonitorAdapterName = _appProfileEngine?.ActiveMonitorAdapterDeviceName;
-
-            if (!current.IsEnabled)
-            {
-                activeNowPanel.Children.Add(new TextBlock { Text = "Профили выключены.", FontStyle = Avalonia.Media.FontStyle.Italic });
-                return;
-            }
-
-            if (activeProfileId is null)
-            {
-                activeNowPanel.Children.Add(new TextBlock { Text = "Сейчас ни один профиль не активен.", FontStyle = Avalonia.Media.FontStyle.Italic });
-                return;
-            }
-
-            var activeProfile = current.Profiles.FirstOrDefault(p => p.Id == activeProfileId);
-            var monitor = _controller.Monitors.FirstOrDefault(m => m.AdapterDeviceName == activeMonitorAdapterName);
-            var monitorLabel = monitor is not null ? MonitorLabel.Format(monitor, monitorNames) : activeMonitorAdapterName ?? "?";
-
-            activeNowPanel.Children.Add(new TextBlock
-            {
-                Text = activeProfile is not null
-                    ? $"«{activeProfile.MatchValue}» → {activeProfile.Percent}% на {monitorLabel}"
-                    : $"Профиль {activeProfileId} на {monitorLabel}",
-            });
-        }
-
-        enabledCheckBox.IsCheckedChanged += (_, _) =>
-        {
-            profileSettings.IsEnabled = enabledCheckBox.IsChecked ?? true;
-            profileStore.Save(profileSettings);
-            RefreshActiveNow();
-        };
-
-        RefreshActiveNow();
-        var activeNowTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
-        activeNowTimer.Tick += (_, _) => RefreshActiveNow();
-        activeNowTimer.Start();
-
-        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
-        root.Children.Add(new TextBlock { Text = "Профили", FontWeight = Avalonia.Media.FontWeight.Bold });
-        var profilesListPanel = new StackPanel { Spacing = 6 };
-
-        void RefreshProfilesList()
-        {
-            profilesListPanel.Children.Clear();
-
-            foreach (var profile in profileSettings.Profiles)
-            {
-                var matchTypeText = profile.MatchType == AppMatchType.ProcessName ? "процесс" : "заголовок";
-
-                var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto") };
-                var typeText = new TextBlock { Text = matchTypeText, Width = 70, VerticalAlignment = VerticalAlignment.Center };
-                var valueText = new TextBlock { Text = profile.MatchValue, VerticalAlignment = VerticalAlignment.Center, TextWrapping = Avalonia.Media.TextWrapping.Wrap };
-                var percentText = new TextBlock { Text = $"{profile.Percent}%", Width = 50, VerticalAlignment = VerticalAlignment.Center };
-                var removeButton = new Button { Content = "Удалить" };
-                removeButton.Click += (_, _) =>
-                {
-                    profileSettings.Profiles.Remove(profile);
-                    profileStore.Save(profileSettings);
-                    RefreshProfilesList();
-                };
-
-                Grid.SetColumn(typeText, 0);
-                Grid.SetColumn(valueText, 1);
-                Grid.SetColumn(percentText, 2);
-                Grid.SetColumn(removeButton, 3);
-                row.Children.Add(typeText);
-                row.Children.Add(valueText);
-                row.Children.Add(percentText);
-                row.Children.Add(removeButton);
-
-                profilesListPanel.Children.Add(row);
-            }
-
-            if (profileSettings.Profiles.Count == 0)
-            {
-                profilesListPanel.Children.Add(new TextBlock { Text = "(профилей ещё нет)", FontStyle = Avalonia.Media.FontStyle.Italic });
-            }
-        }
-
-        RefreshProfilesList();
-        root.Children.Add(profilesListPanel);
-
-        root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
-        root.Children.Add(new TextBlock { Text = "Новый профиль", FontWeight = Avalonia.Media.FontWeight.Bold });
+        var processConditionPanel = new StackPanel { Spacing = 8, Margin = new Thickness(20, 0, 0, 0), IsVisible = false };
+        newRulePanel.Children.Add(processConditionPanel);
 
         var matchTypeRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        matchTypeRow.Children.Add(new TextBlock { Text = "Определять по:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
+        matchTypeRow.Children.Add(new TextBlock { Text = "Определять по:", VerticalAlignment = VerticalAlignment.Center, Width = 130 });
         var matchTypeCombo = new ComboBox
         {
             ItemsSource = new[] { "Запущенный процесс (из списка)", "Заголовок окна (текст)" },
@@ -1787,7 +2027,7 @@ public partial class SettingsWindow : Window
             MinWidth = 220,
         };
         matchTypeRow.Children.Add(matchTypeCombo);
-        root.Children.Add(matchTypeRow);
+        processConditionPanel.Children.Add(matchTypeRow);
 
         var processPickRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
 
@@ -2002,18 +2242,18 @@ public partial class SettingsWindow : Window
         processPickRow.Children.Add(processAutoComplete);
         processPickRow.Children.Add(openAllButton);
         processPickRow.Children.Add(refreshProcessesButton);
-        root.Children.Add(processPickRow);
+        processConditionPanel.Children.Add(processPickRow);
 
         hiddenProcessesRow.Children.Add(hiddenProcessesLabel);
         hiddenProcessesRow.Children.Add(hiddenProcessesCombo);
-        root.Children.Add(hiddenProcessesRow);
+        processConditionPanel.Children.Add(hiddenProcessesRow);
         RefreshHiddenLink();
 
         var titleValueRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, IsVisible = false };
-        titleValueRow.Children.Add(new TextBlock { Text = "Часть заголовка окна:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
+        titleValueRow.Children.Add(new TextBlock { Text = "Часть заголовка окна:", VerticalAlignment = VerticalAlignment.Center, Width = 130 });
         var titleValueInput = new TextBox { Width = 260 };
         titleValueRow.Children.Add(titleValueInput);
-        root.Children.Add(titleValueRow);
+        processConditionPanel.Children.Add(titleValueRow);
 
         matchTypeCombo.SelectionChanged += (_, _) =>
         {
@@ -2022,35 +2262,243 @@ public partial class SettingsWindow : Window
             titleValueRow.IsVisible = !isProcess;
         };
 
+        timeConditionCheckBox.IsCheckedChanged += (_, _) => timeRulerRow.IsVisible = timeConditionCheckBox.IsChecked == true;
+        processConditionCheckBox.IsCheckedChanged += (_, _) => processConditionPanel.IsVisible = processConditionCheckBox.IsChecked == true;
+
+        // --- И/ИЛИ — виден только когда заданы ОБА условия (см. PLAN_FP10 Фаза 1 п.2). ---
+        var combinatorRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, IsVisible = false };
+        combinatorRow.Children.Add(new TextBlock { Text = "Совпадение:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
+        var andToggle = new ToggleButton { Content = "И", IsChecked = true };
+        var orToggle = new ToggleButton { Content = "ИЛИ", IsChecked = false };
+        andToggle.Click += (_, _) => { andToggle.IsChecked = true; orToggle.IsChecked = false; };
+        orToggle.Click += (_, _) => { orToggle.IsChecked = true; andToggle.IsChecked = false; };
+        combinatorRow.Children.Add(andToggle);
+        combinatorRow.Children.Add(orToggle);
+        newRulePanel.Children.Add(combinatorRow);
+
+        void RefreshCombinatorVisibility()
+        {
+            combinatorRow.IsVisible = timeConditionCheckBox.IsChecked == true && processConditionCheckBox.IsChecked == true;
+        }
+        timeConditionCheckBox.IsCheckedChanged += (_, _) => RefreshCombinatorVisibility();
+        processConditionCheckBox.IsCheckedChanged += (_, _) => RefreshCombinatorVisibility();
+
         var percentRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         percentRow.Children.Add(new TextBlock { Text = "Яркость:", VerticalAlignment = VerticalAlignment.Center, Width = 150 });
         var percentInput = BuildNumericStepper(0, 100, 50, "%");
         percentRow.Children.Add(percentInput);
-        root.Children.Add(percentRow);
+        newRulePanel.Children.Add(percentRow);
 
-        var addProfileButton = new Button { Content = "Добавить профиль" };
-        addProfileButton.Click += (_, _) =>
+        // --- Приоритет — необязательный явный тай-брейк (см. PLAN_FP10 Фаза 1 п.6). ---
+        var priorityCheckBox = new CheckBox { Content = "Задать приоритет вручную" };
+        ToolTip.SetTip(priorityCheckBox, "Чем БОЛЬШЕ число — тем выше приоритет: правило с приоритетом 10 " +
+            "побеждает правило с приоритетом 1, если оба активны одновременно. Правило с указанным приоритетом " +
+            "всегда побеждает правило без него. При равном приоритете (или когда ни у одного из правил " +
+            "приоритет не задан) побеждает то, что выше в списке правил (см. кнопки \"▲\"/\"▼\").");
+        newRulePanel.Children.Add(priorityCheckBox);
+        var priorityRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Margin = new Thickness(20, 0, 0, 0), IsVisible = false };
+        priorityRow.Children.Add(new TextBlock { Text = "Приоритет:", VerticalAlignment = VerticalAlignment.Center, Width = 130 });
+        var priorityInput = BuildNumericStepper(0, 999, 10, "");
+        priorityRow.Children.Add(priorityInput);
+        newRulePanel.Children.Add(priorityRow);
+        priorityCheckBox.IsCheckedChanged += (_, _) => priorityRow.IsVisible = priorityCheckBox.IsChecked == true;
+
+        // --- Мониторы — используется, только когда правило сработало ПО ВРЕМЕНИ;
+        // для процесса область действия определяется автоматически (монитор, где
+        // сейчас окно) — см. PLAN_FP10 Фаза 1 п.7. ---
+        newRulePanel.Children.Add(new TextBlock
         {
-            var isProcess = matchTypeCombo.SelectedIndex == 0;
-            var matchValue = isProcess
-                ? processAutoComplete.Text
-                : titleValueInput.Text;
+            Text = "Мониторы (учитывается, только если правило сработало по времени — для процесса монитор определяется автоматически):",
+            FontStyle = Avalonia.Media.FontStyle.Italic,
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+        });
+        var allMonitorsCheckBox = new CheckBox { Content = "Все мониторы", IsChecked = true };
+        newRulePanel.Children.Add(allMonitorsCheckBox);
 
-            if (string.IsNullOrWhiteSpace(matchValue))
+        var monitorCheckBoxes = new List<(MonitorInfo Monitor, CheckBox CheckBox)>();
+        var monitorsPickPanel = new StackPanel { Spacing = 4, Margin = new Thickness(20, 0, 0, 0) };
+        foreach (var monitor in _controller.Monitors)
+        {
+            var checkBox = new CheckBox { Content = MonitorLabel.Format(monitor, monitorNames), IsChecked = true, IsEnabled = false };
+            monitorCheckBoxes.Add((monitor, checkBox));
+            monitorsPickPanel.Children.Add(checkBox);
+        }
+
+        allMonitorsCheckBox.IsCheckedChanged += (_, _) =>
+        {
+            var allSelected = allMonitorsCheckBox.IsChecked == true;
+            foreach (var (_, checkBox) in monitorCheckBoxes)
+            {
+                checkBox.IsEnabled = !allSelected;
+                if (allSelected)
+                {
+                    checkBox.IsChecked = true;
+                }
+            }
+        };
+        newRulePanel.Children.Add(monitorsPickPanel);
+
+        var addRuleButton = new Button { Content = "Добавить правило" };
+        var cancelEditButton = new Button { Content = "Отмена", IsVisible = false };
+
+        // Возвращает форму в состояние "новое правило" — вызывается и после
+        // успешного добавления/сохранения, и по кнопке "Отмена".
+        void ResetForm()
+        {
+            editingRule = null;
+            formTitleText.Text = "Новое правило";
+            addRuleButton.Content = "Добавить правило";
+            cancelEditButton.IsVisible = false;
+
+            nameInput.Text = "";
+
+            timeConditionCheckBox.IsChecked = false;
+            setTimeSegments(new[]
+            {
+                new TimeSegment { StartMinute = 22 * 60, EndMinute = 24 * 60 },
+                new TimeSegment { StartMinute = 0, EndMinute = 6 * 60 },
+            });
+
+            processConditionCheckBox.IsChecked = false;
+            matchTypeCombo.SelectedIndex = 0;
+            processPickRow.IsVisible = true;
+            titleValueRow.IsVisible = false;
+            processAutoComplete.Text = "";
+            titleValueInput.Text = "";
+
+            andToggle.IsChecked = true;
+            orToggle.IsChecked = false;
+
+            percentInput.Value = 50;
+
+            priorityCheckBox.IsChecked = false;
+            priorityInput.Value = 10;
+
+            allMonitorsCheckBox.IsChecked = true;
+        }
+
+        // Заполняет форму значениями уже существующего правила — по кнопке
+        // "Изменить" на карточке (см. RefreshRulesList выше). Видимость
+        // processPickRow/titleValueRow выставляется ЯВНО, а не только через
+        // событие SelectionChanged у matchTypeCombo — если два подряд
+        // редактируемых правила одного типа (оба "процесс" или оба "заголовок"),
+        // SelectedIndex не меняется и событие не перевыстрелит.
+        void LoadRuleIntoForm(AutomationRule rule)
+        {
+            editingRule = rule;
+            var ruleLabel = string.IsNullOrWhiteSpace(rule.Name) ? "(без названия)" : rule.Name;
+            formTitleText.Text = $"Изменение правила «{ruleLabel}»";
+            addRuleButton.Content = "Сохранить изменения";
+            cancelEditButton.IsVisible = true;
+
+            nameInput.Text = rule.Name;
+
+            timeConditionCheckBox.IsChecked = rule.HasTimeCondition;
+            setTimeSegments(rule.IsTimeAlwaysActive
+                ? new[] { new TimeSegment { StartMinute = 0, EndMinute = 1440 } }
+                : rule.TimeSegments);
+
+            processConditionCheckBox.IsChecked = rule.HasProcessCondition;
+            var isProcessByNameForEdit = rule.ProcessMatchType == AppMatchType.ProcessName;
+            matchTypeCombo.SelectedIndex = isProcessByNameForEdit ? 0 : 1;
+            processPickRow.IsVisible = isProcessByNameForEdit;
+            titleValueRow.IsVisible = !isProcessByNameForEdit;
+            processAutoComplete.Text = isProcessByNameForEdit ? rule.ProcessMatchValue : "";
+            titleValueInput.Text = isProcessByNameForEdit ? "" : rule.ProcessMatchValue;
+
+            andToggle.IsChecked = rule.Combinator == AutomationCombinator.And;
+            orToggle.IsChecked = rule.Combinator == AutomationCombinator.Or;
+
+            percentInput.Value = rule.Percent;
+
+            priorityCheckBox.IsChecked = rule.Priority is not null;
+            priorityInput.Value = rule.Priority ?? 10;
+
+            allMonitorsCheckBox.IsChecked = rule.MonitorKeys.Count == 0;
+            if (rule.MonitorKeys.Count > 0)
+            {
+                foreach (var (monitor, checkBox) in monitorCheckBoxes)
+                {
+                    checkBox.IsChecked = rule.MonitorKeys.Contains(BrightnessController.GetMonitorKey(monitor));
+                }
+            }
+        }
+
+        loadRuleIntoForm = LoadRuleIntoForm;
+        cancelEditButton.Click += (_, _) => ResetForm();
+
+        addRuleButton.Click += (_, _) =>
+        {
+            var hasTime = timeConditionCheckBox.IsChecked == true;
+            var hasProcess = processConditionCheckBox.IsChecked == true;
+
+            if (!hasTime && !hasProcess)
             {
                 return;
             }
 
-            profileSettings.Profiles.Add(new AppProfile
+            var isProcessByName = matchTypeCombo.SelectedIndex == 0;
+            var processValue = hasProcess
+                ? (isProcessByName ? processAutoComplete.Text : titleValueInput.Text)
+                : null;
+
+            if (hasProcess && string.IsNullOrWhiteSpace(processValue))
             {
-                MatchType = isProcess ? AppMatchType.ProcessName : AppMatchType.WindowTitle,
-                MatchValue = matchValue.Trim(),
-                Percent = (int)(percentInput.Value ?? 50),
-            });
-            profileStore.Save(profileSettings);
-            RefreshProfilesList();
+                return;
+            }
+
+            var scopeKeys = allMonitorsCheckBox.IsChecked == true
+                ? new List<string>()
+                : monitorCheckBoxes.Where(t => t.CheckBox.IsChecked == true).Select(t => BrightnessController.GetMonitorKey(t.Monitor)).ToList();
+
+            var (timeSegments, isTimeAlwaysActive) = hasTime
+                ? getTimeSegments()
+                : (new List<TimeSegment>(), false);
+
+            if (editingRule is { } rule)
+            {
+                // Правило — ссылочный тип, уже лежащий в automationSettings.Rules по
+                // своему индексу: правим поля НА МЕСТЕ, а не удаляем/пересоздаём —
+                // иначе потерялась бы позиция в списке (а она участвует в тай-брейке
+                // приоритета, см. PLAN_FP10 Фаза 1 п.6).
+                rule.Name = nameInput.Text?.Trim() ?? "";
+                rule.TimeSegments = timeSegments;
+                rule.IsTimeAlwaysActive = isTimeAlwaysActive;
+                rule.ProcessMatchType = isProcessByName ? AppMatchType.ProcessName : AppMatchType.WindowTitle;
+                rule.ProcessMatchValue = hasProcess ? processValue!.Trim() : null;
+                rule.Combinator = andToggle.IsChecked == true ? AutomationCombinator.And : AutomationCombinator.Or;
+                rule.Percent = (int)(percentInput.Value ?? 50);
+                rule.Priority = priorityCheckBox.IsChecked == true ? (int)(priorityInput.Value ?? 10) : null;
+                rule.MonitorKeys = scopeKeys;
+            }
+            else
+            {
+                automationSettings.Rules.Add(new AutomationRule
+                {
+                    Name = nameInput.Text?.Trim() ?? "",
+                    TimeSegments = timeSegments,
+                    IsTimeAlwaysActive = isTimeAlwaysActive,
+                    ProcessMatchType = isProcessByName ? AppMatchType.ProcessName : AppMatchType.WindowTitle,
+                    ProcessMatchValue = hasProcess ? processValue!.Trim() : null,
+                    Combinator = andToggle.IsChecked == true ? AutomationCombinator.And : AutomationCombinator.Or,
+                    Percent = (int)(percentInput.Value ?? 50),
+                    Priority = priorityCheckBox.IsChecked == true ? (int)(priorityInput.Value ?? 10) : null,
+                    MonitorKeys = scopeKeys,
+                });
+            }
+
+            automationStore.Save(automationSettings);
+            RefreshRulesList();
+            RefreshActiveNow();
+            ResetForm();
         };
-        root.Children.Add(addProfileButton);
+
+        var formButtonsRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        formButtonsRow.Children.Add(addRuleButton);
+        formButtonsRow.Children.Add(cancelEditButton);
+        newRulePanel.Children.Add(formButtonsRow);
+
+        root.Children.Add(newRuleCard);
     }
 
     private void BuildIdleTab(StackPanel root)
@@ -2387,9 +2835,7 @@ public partial class SettingsWindow : Window
         // аналогии со скроллом над иконкой трея (FP2). Шаг — tickStep (тот
         // же параметр, что уже используется для прилипания при
         // перетаскивании, отдельной настройки не заводили). Shift — точная
-        // подстройка ±1% в обход шага (та же идея, что и в
-        // BuildScrollableTwoDigit для формы расписания, хотя там у Shift
-        // обратный смысл — здесь именно так решил пользователь). Пишем в
+        // подстройка ±1% в обход шага. Пишем в
         // slider.Value, а не напрямую вызываем onChanged — тогда срабатывает
         // тот же PropertyChanged-обработчик выше (раз isDragging=false,
         // onChanged вызовется сразу на каждый тик), без дублирования кода
@@ -2480,76 +2926,6 @@ public partial class SettingsWindow : Window
     // сразу при создании) — до присоединения к дереву стиль темы ещё не применён,
     // и раннее чтение FontFamily/FontSize даёт метрики "по умолчанию", не совпадающие
     // с реально отрисованными (отсюда была неверная амплитуда прокрутки).
-    // Два часа/минуты в форме расписания (FP9 Фаза 5) вводятся прокруткой колеса, а
-    // не NumericUpDown — тот на практике оказался слишком узким, число почти не было
-    // видно рядом со стрелочками. Цифры "десятки"/"единицы" — отдельные, независимо
-    // наводимые TextBlock: прокрутка над ЛЮБОЙ из них по умолчанию меняет ВСЁ число
-    // на ±1 (так проще и предсказуемее — не нужно целиться в конкретную цифру), а с
-    // зажатым Shift — именно ту цифру, над которой курсор (десятки → ±10, единицы → ±1).
-    private static Control BuildScrollableTwoDigit(Func<int> getValue, Action<int> setValue, int min, int max)
-    {
-        // Ширина/выравнивание ФИКСИРОВАНЫ — без этого узкие цифры ("1") и широкие
-        // ("8") занимали разную ширину, весь блок "сдвигался" при каждом изменении
-        // значения, курсор оставался на месте, а цифра "уезжала" из-под него — из-за
-        // этого следующий скролл иногда попадал уже на ScrollViewer всего окна.
-        const double digitWidth = 16;
-        var tensDigit = new TextBlock
-        {
-            FontSize = 18,
-            FontWeight = Avalonia.Media.FontWeight.Bold,
-            Width = digitWidth,
-            TextAlignment = Avalonia.Media.TextAlignment.Center,
-        };
-        var onesDigit = new TextBlock
-        {
-            FontSize = 18,
-            FontWeight = Avalonia.Media.FontWeight.Bold,
-            Width = digitWidth,
-            TextAlignment = Avalonia.Media.TextAlignment.Center,
-        };
-        var cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.SizeNorthSouth);
-        tensDigit.Cursor = cursor;
-        onesDigit.Cursor = cursor;
-
-        void Refresh()
-        {
-            var text = getValue().ToString("00");
-            tensDigit.Text = text[..1];
-            onesDigit.Text = text[1..];
-        }
-
-        Refresh();
-
-        void HandleWheel(int placeValue, PointerWheelEventArgs e)
-        {
-            // Помечаем обработанным сразу, а не только при реальном изменении —
-            // иначе "пустой" (нулевой) скролл-евент может провалиться дальше и
-            // прокрутить ScrollViewer всего окна настроек.
-            e.Handled = true;
-
-            var notches = Math.Sign(e.Delta.Y);
-            if (notches == 0)
-            {
-                return;
-            }
-
-            var step = e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? placeValue : 1;
-            setValue(Math.Clamp(getValue() + notches * step, min, max));
-            Refresh();
-        }
-
-        tensDigit.PointerWheelChanged += (_, e) => HandleWheel(10, e);
-        onesDigit.PointerWheelChanged += (_, e) => HandleWheel(1, e);
-
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 0 };
-        row.Children.Add(tensDigit);
-        row.Children.Add(onesDigit);
-
-        ToolTip.SetTip(row, "Прокрутите колесо мыши: ±1 к числу. С зажатым Shift — точнее: над первой цифрой ±10, над второй ±1.");
-
-        return row;
-    }
-
     // Раньше это был RenderTransform (сдвиг X) + Border с ClipToBounds — на практике
     // ломало раскладку всей строки (текст "убегал" на соседнюю строку окна ниже),
     // видимо из-за того, как Avalonia сочетает трансформацию рендера с обрезкой у

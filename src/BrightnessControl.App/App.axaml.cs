@@ -20,8 +20,7 @@ public partial class App : Application
     private BrightnessHudWindow? _hud;
     private SettingsWindow? _settingsWindow;
     private CoalescingBrightnessApplier? _globalApplier;
-    private ScheduleEngine? _scheduleEngine;
-    private AppProfileEngine? _appProfileEngine;
+    private AutomationEngine? _automationEngine;
     private IdleEngine? _idleEngine;
     private AccentColorService? _accentColorService;
     private MonitorLockService? _monitorLockService;
@@ -74,30 +73,24 @@ public partial class App : Application
                 },
                 () => _brightnessController?.GetGlobalPacingMs() ?? 100);
             _hud = new BrightnessHudWindow(_traySettings);
-            // Профиль приложения приоритетнее расписания: пока на мониторе активен
-            // подходящий-под-профиль процесс, расписание этот монитор не трогает
-            // (см. AppProfileEngine.ActiveMonitorAdapterDeviceName и FP5 Фазу 3).
-            // Приглушение по бездействию (FP6) — глобальное и приоритетнее всех: пока
-            // оно активно, расписание игнорирует ВСЕ мониторы (см. IdleEngine.IsDimmed).
-            _appProfileEngine = new AppProfileEngine(
+            // FP10 — AutomationEngine заменяет собой связку ScheduleEngine+
+            // AppProfileEngine: один список правил (время/процесс/оба), победитель
+            // на монитор пересчитывается на каждом тике. Приглушение по
+            // бездействию (FP6) — глобальное и приоритетнее всех: пока оно активно,
+            // автоматизация игнорирует ВСЕ мониторы (см. IdleEngine.IsDimmed).
+            // Лок (FP14) — per-монитор, выше автоматизации.
+            _automationEngine = new AutomationEngine(
                 _brightnessController,
-                isMonitorLocked: monitor => _monitorLockService?.IsLocked(monitor) == true);
+                isMonitorLocked: monitor => _monitorLockService?.IsLocked(monitor) == true,
+                isSuppressed: () => _idleEngine?.IsDimmed == true);
             _idleEngine = new IdleEngine(
                 _brightnessController,
-                resolveActiveProfilePercent: monitor => _appProfileEngine?.ActiveMonitorAdapterDeviceName == monitor.AdapterDeviceName
-                    ? _appProfileEngine.ActiveProfilePercent
-                    : null,
+                resolveAutomationPercent: monitor => _automationEngine?.ResolvePercentForMonitor(monitor),
                 isMonitorLocked: monitor => _monitorLockService?.IsLocked(monitor) == true);
-            _scheduleEngine = new ScheduleEngine(
-                _brightnessController,
-                isMonitorSuppressed: monitor => _idleEngine?.IsDimmed == true
-                    || _appProfileEngine?.ActiveMonitorAdapterDeviceName == monitor.AdapterDeviceName
-                    || _monitorLockService?.IsLocked(monitor) == true);
 
             // При снятии лока монитор должен СРАЗУ получить то значение, которое
-            // автоматика уже хочет прямо сейчас (приоритет простой → профиль →
-            // расписание — тот же порядок, что и везде), а не ждать следующего
-            // события/тика соответствующего движка.
+            // автоматика уже хочет прямо сейчас, а не ждать следующего
+            // события/тика движка.
             _monitorLockService.LockChanged += (monitor, locked) =>
             {
                 if (locked || _brightnessController is null)
@@ -107,9 +100,7 @@ public partial class App : Application
 
                 int? resyncValue = _idleEngine?.IsDimmed == true
                     ? null // простой сам восстановит при выходе — не вмешиваемся, пока активен
-                    : _appProfileEngine?.ActiveMonitorAdapterDeviceName == monitor.AdapterDeviceName
-                        ? _appProfileEngine.ActiveProfilePercent
-                        : ComputeScheduleFallback(monitor);
+                    : _automationEngine?.ResolvePercentForMonitor(monitor);
 
                 if (resyncValue is not null)
                 {
@@ -165,30 +156,6 @@ public partial class App : Application
         };
     }
 
-    // FP14 — то же самое вычисление, что уже дважды продублировано в Core
-    // (AppProfileEngine.ComputeScheduleFallback/IdleEngine.ComputeScheduleFallback) —
-    // третья копия здесь осознанно, по тому же принципу: это маленький
-    // самодостаточный расчёт "что расписание хочет для монитора ПРЯМО СЕЙЧАС",
-    // не стоящий отдельной абстракции ради переиспользования между Core и App.
-    private static int? ComputeScheduleFallback(MonitorInfo monitor)
-    {
-        var schedule = new JsonFileScheduleStore().Load();
-        if (!schedule.IsEnabled || schedule.Rules.Count == 0)
-        {
-            return null;
-        }
-
-        var monitorKey = BrightnessController.GetMonitorKey(monitor);
-        var applicableRules = schedule.Rules
-            .Where(r => r.MonitorKeys.Count == 0 || r.MonitorKeys.Contains(monitorKey))
-            .OrderBy(r => r.Time)
-            .ToList();
-
-        return applicableRules.Count == 0
-            ? null
-            : ScheduleEngine.FindActiveRule(applicableRules, TimeOnly.FromDateTime(DateTime.Now)).Percent;
-    }
-
     private static int ComputeInitialGlobalPercent(BrightnessController controller)
     {
         var monitors = controller.Monitors;
@@ -227,7 +194,7 @@ public partial class App : Application
                 _appSettingsStore ?? new AppSettingsStore(),
                 _traySettings ?? new TraySettings(),
                 _traySettingsStore ?? new TraySettingsStore(),
-                _appProfileEngine,
+                _automationEngine,
                 _idleEngine,
                 _accentColorService,
                 _trayService,

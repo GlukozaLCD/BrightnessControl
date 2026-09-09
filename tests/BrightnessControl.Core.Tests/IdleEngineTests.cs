@@ -18,24 +18,8 @@ public class IdleEngineTests
         }
     }
 
-    private sealed class FakeScheduleStore : IScheduleStore
-    {
-        public ScheduleSettings Settings { get; }
-
-        public FakeScheduleStore(ScheduleSettings settings)
-        {
-            Settings = settings;
-        }
-
-        public ScheduleSettings Load() => Settings;
-
-        public void Save(ScheduleSettings settings)
-        {
-        }
-    }
-
     [Fact]
-    public void EvaluateAndApply_DimsOnTimeout_AndRestoresSnapshotOnActivity_WhenNoScheduleOrProfile()
+    public void EvaluateAndApply_DimsOnTimeout_AndRestoresSnapshotOnActivity_WhenNoAutomationApplies()
     {
         var statePath = Path.Combine(Path.GetTempPath(), $"idle-state-test-{Guid.NewGuid():N}.json");
         var pacingPath = Path.Combine(Path.GetTempPath(), $"idle-pacing-test-{Guid.NewGuid():N}.json");
@@ -57,9 +41,8 @@ public class IdleEngineTests
             {
                 var dimPercent = original >= 50 ? 5 : 95;
                 var idleStore = new FakeIdleSettingsStore(new IdleSettings { IsEnabled = true, IdleTimeoutMinutes = 5, DimPercent = dimPercent });
-                var scheduleStore = new FakeScheduleStore(new ScheduleSettings { IsEnabled = false });
 
-                using var engine = new IdleEngine(controller, idleStore, scheduleStore, autoStart: false);
+                using var engine = new IdleEngine(controller, idleStore, resolveAutomationPercent: null, autoStart: false);
 
                 engine.EvaluateAndApply(TimeSpan.FromMinutes(10));
                 var whileDimmed = controller.GetBrightness(ddcCiMonitor);
@@ -95,11 +78,10 @@ public class IdleEngineTests
         }
     }
 
-    // FP6 Фаза 1: восстановление после простоя должно брать АКТУАЛЬНОЕ значение
-    // расписания, а не устаревший снимок "до простоя" — тот же принцип, что и в
-    // приоритете FP4×FP5 (AppProfileEngine.RestorePrevious).
+    // FP6 Фаза 1 / FP10: восстановление после простоя должно брать АКТУАЛЬНОЕ
+    // значение автоматизации, а не устаревший снимок "до простоя".
     [Fact]
-    public void EvaluateAndApply_RestoresScheduleValue_NotStaleSnapshot_WhenScheduleApplies()
+    public void EvaluateAndApply_RestoresAutomationValue_NotStaleSnapshot_WhenAutomationApplies()
     {
         var statePath = Path.Combine(Path.GetTempPath(), $"idle-state-test-{Guid.NewGuid():N}.json");
         var pacingPath = Path.Combine(Path.GetTempPath(), $"idle-pacing-test-{Guid.NewGuid():N}.json");
@@ -120,18 +102,11 @@ public class IdleEngineTests
             try
             {
                 var dimPercent = original >= 50 ? 5 : 95;
-                // Единственное правило на 00:00 действует круглые сутки (см.
-                // ScheduleEngine.FindActiveRule) — не зависит от реального времени теста.
-                var scheduleTarget = original >= 50 ? 45 : 55;
+                var automationTarget = original >= 50 ? 45 : 55;
 
                 var idleStore = new FakeIdleSettingsStore(new IdleSettings { IsEnabled = true, IdleTimeoutMinutes = 5, DimPercent = dimPercent });
-                var scheduleStore = new FakeScheduleStore(new ScheduleSettings
-                {
-                    IsEnabled = true,
-                    Rules = { new ScheduleRule { Time = TimeOnly.Parse("00:00"), Percent = scheduleTarget } },
-                });
 
-                using var engine = new IdleEngine(controller, idleStore, scheduleStore, autoStart: false);
+                using var engine = new IdleEngine(controller, idleStore, resolveAutomationPercent: _ => automationTarget, autoStart: false);
 
                 engine.EvaluateAndApply(TimeSpan.FromMinutes(10));
                 var whileDimmed = controller.GetBrightness(ddcCiMonitor);
@@ -143,7 +118,7 @@ public class IdleEngineTests
                 engine.EvaluateAndApply(TimeSpan.Zero);
                 var afterActivity = controller.GetBrightness(ddcCiMonitor);
                 Assert.NotNull(afterActivity);
-                Assert.InRange(afterActivity!.Percent, scheduleTarget - 5, scheduleTarget + 5);
+                Assert.InRange(afterActivity!.Percent, automationTarget - 5, automationTarget + 5);
             }
             finally
             {
