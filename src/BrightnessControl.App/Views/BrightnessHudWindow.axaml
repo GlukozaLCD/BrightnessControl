@@ -3,7 +3,6 @@
         x:Class="BrightnessControl.App.Views.BrightnessHudWindow"
         WindowDecorations="None"
         ShowInTaskbar="False"
-        Topmost="True"
         CanResize="False"
         Background="#CC202020">
     <!-- Три альтернативных представления HUD (FP12 Фаза 4, п.6) собраны в

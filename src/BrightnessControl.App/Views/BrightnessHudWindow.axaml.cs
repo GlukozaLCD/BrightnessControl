@@ -89,6 +89,15 @@ public partial class BrightnessHudWindow : Window
         _hideTimer.Tick += (_, _) =>
         {
             _hideTimer.Stop();
+            // Topmost снимается ПЕРЕД Hide (не после) — подозрение, что
+            // затянувшееся Topmost-окно (даже скрытое) сбивало Windows при
+            // решении, прятать ли панель задач в полноэкранном режиме
+            // сторонних приложений. HUD живёт всё время работы программы и
+            // скрывается/показывается очень часто (каждый скролл над иконкой
+            // трея) — единственное окно с такой судьбой, остальные Topmost-окна
+            // (SettingsWindow/GlobalSliderPopup/...) пересоздаются и закрываются
+            // по-настоящему, а не просто прячутся.
+            Topmost = false;
             Hide();
         };
     }
@@ -369,6 +378,9 @@ public partial class BrightnessHudWindow : Window
 
         if (!IsVisible)
         {
+            // Topmost выставляется ПЕРЕД показом (см. комментарий в конструкторе
+            // у _hideTimer.Tick) — окно топовое только пока реально видно.
+            Topmost = true;
             Show();
         }
 
