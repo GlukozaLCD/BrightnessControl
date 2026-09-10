@@ -646,6 +646,180 @@ public partial class SettingsWindow : Window
         return canvas;
     }
 
+    // Векторный шеврон вниз вместо текстового символа "▼" — тот, как выяснилось
+    // (FP10, скриншот пользователя), либо не рисовался шрифтом кнопки вовсе, либо
+    // съезжал в крошечную точку в узкой 32px кнопке. Та же причина, по которой
+    // плюс/крестик выше нарисованы линиями, а не текстовыми глифами.
+    private static Control BuildChevronDownGlyph(double width, double height, double thickness, Avalonia.Media.IBrush stroke)
+    {
+        var canvas = new Canvas { Width = width, Height = height, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        canvas.Children.Add(new Polyline
+        {
+            Points = new Avalonia.Points { new Point(0, 0), new Point(width / 2, height), new Point(width, 0) },
+            Stroke = stroke,
+            StrokeThickness = thickness,
+            StrokeLineCap = Avalonia.Media.PenLineCap.Round,
+            StrokeJoin = Avalonia.Media.PenLineJoin.Round,
+        });
+        return canvas;
+    }
+
+    // Зеркальный шеврон вверх — для кнопки "▲" в стене карточки правила (FP10).
+    private static Control BuildChevronUpGlyph(double width, double height, double thickness, Avalonia.Media.IBrush stroke)
+    {
+        var canvas = new Canvas { Width = width, Height = height, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        canvas.Children.Add(new Polyline
+        {
+            Points = new Avalonia.Points { new Point(0, height), new Point(width / 2, 0), new Point(width, height) },
+            Stroke = stroke,
+            StrokeThickness = thickness,
+            StrokeLineCap = Avalonia.Media.PenLineCap.Round,
+            StrokeJoin = Avalonia.Media.PenLineJoin.Round,
+        });
+        return canvas;
+    }
+
+    // Упрощённый "карандаш" для кнопки "Изменить" в стене карточки правила
+    // (FP10) — тот же язык, что у плюса/крестика/шеврона выше: несколько линий
+    // на Canvas, а не текстовый глиф или сложная SVG-геометрия.
+    private static Control BuildEditGlyph(double size, double thickness, Avalonia.Media.IBrush stroke)
+    {
+        var canvas = new Canvas { Width = size, Height = size, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        canvas.Children.Add(new Line
+        {
+            StartPoint = new Point(size * 0.08, size * 0.92),
+            EndPoint = new Point(size * 0.62, size * 0.38),
+            Stroke = stroke,
+            StrokeThickness = thickness,
+            StrokeLineCap = Avalonia.Media.PenLineCap.Round,
+        });
+        canvas.Children.Add(new Line
+        {
+            StartPoint = new Point(size * 0.62, size * 0.38),
+            EndPoint = new Point(size * 0.9, size * 0.1),
+            Stroke = stroke,
+            StrokeThickness = thickness,
+            StrokeLineCap = Avalonia.Media.PenLineCap.Round,
+        });
+        canvas.Children.Add(new Line
+        {
+            StartPoint = new Point(size * 0.04, size * 0.96),
+            EndPoint = new Point(size * 0.16, size * 0.84),
+            Stroke = stroke,
+            StrokeThickness = thickness * 1.4,
+            StrokeLineCap = Avalonia.Media.PenLineCap.Round,
+        });
+        return canvas;
+    }
+
+    // FP10 — блик, вживлённый в стену карточки правила ("Изменить"/"Удалить"/
+    // "▲"/"▼"): та же техника, что уже используется кнопкой закрытия программы
+    // (SetupCloseButton) — ручной DispatcherTimer двигает офсеты GradientStops
+    // диагонального (или вертикального) LinearGradientBrush, а не CSS-подобный
+    // transition/keyframes (тех в Avalonia просто нет). В отличие от кнопки
+    // закрытия — при уходе курсора эта кнопка возвращается в состояние покоя
+    // (закрытие остаётся красным всегда, тут это не нужно).
+    // glyphBrush — общая кисть у САМОГО глифа (Line/Polyline внутри glyph):
+    // передаётся отдельно, чтобы можно было перекрасить контур синхронно с
+    // фоном (Line.Stroke не читается обратно из Control, проще держать
+    // отдельную ссылку на мутируемую SolidColorBrush).
+    private static Border BuildSweepWallButton(
+        Control glyph,
+        Avalonia.Media.SolidColorBrush glyphBrush,
+        Avalonia.Media.Color glyphRestColor,
+        Avalonia.Media.Color glyphHoverColor,
+        CornerRadius cornerRadius,
+        Avalonia.Media.Color restColor,
+        Avalonia.Media.Color solidColor,
+        Avalonia.Media.Color streakColor,
+        RelativePoint sweepStart,
+        RelativePoint sweepEnd,
+        bool isEnabled,
+        string tooltip,
+        Action onClick)
+    {
+        glyphBrush.Color = isEnabled ? glyphRestColor : glyphHoverColor;
+        var restBrush = new Avalonia.Media.SolidColorBrush(restColor);
+
+        var button = new Border
+        {
+            CornerRadius = cornerRadius,
+            Background = restBrush,
+            Child = glyph,
+            Cursor = new Avalonia.Input.Cursor(isEnabled ? Avalonia.Input.StandardCursorType.Hand : Avalonia.Input.StandardCursorType.No),
+            Opacity = isEnabled ? 1.0 : 0.3,
+        };
+        ToolTip.SetTip(button, tooltip);
+
+        if (!isEnabled)
+        {
+            glyphBrush.Color = glyphRestColor;
+            return button;
+        }
+
+        var solidBrush = new Avalonia.Media.SolidColorBrush(solidColor);
+        var sweepGradient = new Avalonia.Media.LinearGradientBrush
+        {
+            StartPoint = sweepStart,
+            EndPoint = sweepEnd,
+            GradientStops =
+            {
+                new Avalonia.Media.GradientStop(solidColor, 0),
+                new Avalonia.Media.GradientStop(streakColor, 0),
+                new Avalonia.Media.GradientStop(solidColor, 0),
+            },
+        };
+
+        const double bandWidth = 0.28;
+        DispatcherTimer? sweepTimer = null;
+        var progress = 0.0;
+
+        button.PointerEntered += (_, _) =>
+        {
+            glyphBrush.Color = glyphHoverColor;
+
+            if (sweepTimer is not null)
+            {
+                return;
+            }
+
+            progress = 0.0;
+            button.Background = sweepGradient;
+            sweepTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
+            sweepTimer.Tick += (_, _) =>
+            {
+                progress += 0.06;
+                if (progress >= 1.0)
+                {
+                    sweepTimer?.Stop();
+                    sweepTimer = null;
+                    button.Background = solidBrush;
+                    return;
+                }
+
+                var center = -bandWidth + progress * (1 + 2 * bandWidth);
+                sweepGradient.GradientStops[0].Offset = Math.Clamp(center - bandWidth, 0, 1);
+                sweepGradient.GradientStops[1].Offset = Math.Clamp(center, 0, 1);
+                sweepGradient.GradientStops[2].Offset = Math.Clamp(center + bandWidth, 0, 1);
+            };
+            sweepTimer.Start();
+        };
+        button.PointerExited += (_, _) =>
+        {
+            glyphBrush.Color = glyphRestColor;
+            sweepTimer?.Stop();
+            sweepTimer = null;
+            button.Background = restBrush;
+        };
+        button.PointerPressed += (_, e) =>
+        {
+            e.Handled = true;
+            onClick();
+        };
+
+        return button;
+    }
+
     // FP13 — свой акцентный цвет, виден только пока чекбокс Windows-акцента
     // снят (иначе базовый цвет и так берётся из системы, выбирать нечего).
     // Переиспользует тот же ColorPickerWindow, что и свой цвет иконки трея
@@ -1835,13 +2009,10 @@ public partial class SettingsWindow : Window
         activeNowTimer.Start();
 
         root.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 8) });
-        root.Children.Add(new TextBlock { Text = "Правила", FontWeight = Avalonia.Media.FontWeight.Bold });
-        root.Children.Add(new TextBlock
-        {
-            Text = "Порядок в списке имеет значение — им разрешаются конфликты между правилами без явного приоритета (см. кнопки \"▲\"/\"▼\").",
-            FontStyle = Avalonia.Media.FontStyle.Italic,
-            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
-        });
+        var rulesHeaderText = new TextBlock { Text = "Правила", FontWeight = Avalonia.Media.FontWeight.Bold };
+        ToolTip.SetTip(rulesHeaderText, "Порядок в списке имеет значение — им разрешаются конфликты между " +
+            "правилами без явного приоритета (см. кнопки \"▲\"/\"▼\"): побеждает то правило, что ВЫШЕ по списку.");
+        root.Children.Add(rulesHeaderText);
 
         var rulesListPanel = new StackPanel { Spacing = 6 };
 
@@ -1853,6 +2024,21 @@ public partial class SettingsWindow : Window
         // RefreshRulesList вызывается раньше, чем форма построена).
         AutomationRule? editingRule = null;
         Action<AutomationRule>? loadRuleIntoForm = null;
+
+        // FP10 — цвета для карточки-с-стенами (см. Artifact-макет, обсуждённый с
+        // пользователем): приглушённый тон покоя общий у всех кнопок в стене,
+        // Изменить/Удалить заливаются насыщенным цветом при наведении, "▲"/"▼"
+        // палитру НЕ меняют (только чуть светлее той же приглушённой заливки).
+        var wallRestColor = Avalonia.Media.Color.FromArgb(0x0D, 0x94, 0x8F, 0xA3);
+        var editColor = Avalonia.Media.Color.Parse("#E8C23D");
+        var editInkColor = Avalonia.Media.Color.Parse("#241C02");
+        var dangerColor = Avalonia.Media.Color.Parse("#E85D6B");
+        var moveHoverColor = Avalonia.Media.Color.FromArgb(0x24, 0x94, 0x8F, 0xA3);
+        var streakFaintColor = Avalonia.Media.Color.FromArgb(0x1E, 0xFF, 0xFF, 0xFF);
+        var mutedGlyphColor = Avalonia.Media.Color.Parse("#948FA3");
+        var inkGlyphColor = Avalonia.Media.Color.Parse("#F1EEF7");
+        var goodColor = Avalonia.Media.Color.Parse("#7FBF6A");
+        var faintColor = Avalonia.Media.Color.Parse("#6B6678");
 
         void RefreshRulesList()
         {
@@ -1888,78 +2074,182 @@ public partial class SettingsWindow : Window
 
                 var priorityText = rule.Priority is not null ? $"приоритет {rule.Priority}" : null;
 
+                // FP10 — карточка-раскладка "стена | центр | стена" (тот же приём,
+                // что уже используется leftArrow/rightArrow в галерее форм иконки
+                // трея): кнопки — часть силуэта самой карточки, не отдельные
+                // элементы поверх неё. ClipToBounds обязателен — иначе прямые
+                // внутренние углы полос торчат за скруглённые внешние углы карточки.
                 var card = new Border
                 {
+                    Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0x20, 0x1D, 0x28)),
                     BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x40, 0x80, 0x80, 0x80)),
                     BorderThickness = new Thickness(1),
-                    CornerRadius = new CornerRadius(4),
-                    Padding = new Thickness(10),
+                    CornerRadius = new CornerRadius(14),
+                    ClipToBounds = true,
                 };
-                var cardPanel = new StackPanel { Spacing = 2 };
-                card.Child = cardPanel;
+                var cardGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("34,*,34") };
 
-                var titleRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto,Auto,Auto,Auto") };
+                var editGlyphBrush = new Avalonia.Media.SolidColorBrush();
+                var editButton = BuildSweepWallButton(
+                    BuildEditGlyph(13, 1.8, editGlyphBrush),
+                    editGlyphBrush,
+                    glyphRestColor: mutedGlyphColor,
+                    glyphHoverColor: editInkColor,
+                    cornerRadius: new CornerRadius(13, 0, 0, 0),
+                    restColor: wallRestColor,
+                    solidColor: editColor,
+                    streakColor: Avalonia.Media.Colors.White,
+                    sweepStart: new RelativePoint(1, 0, RelativeUnit.Relative),
+                    sweepEnd: new RelativePoint(0, 1, RelativeUnit.Relative),
+                    isEnabled: true,
+                    tooltip: "Изменить",
+                    onClick: () => loadRuleIntoForm?.Invoke(rule));
+
+                var deleteGlyphBrush = new Avalonia.Media.SolidColorBrush();
+                var deleteButton = BuildSweepWallButton(
+                    BuildCrossGlyph(11, 2.0, deleteGlyphBrush),
+                    deleteGlyphBrush,
+                    glyphRestColor: mutedGlyphColor,
+                    glyphHoverColor: Avalonia.Media.Colors.White,
+                    cornerRadius: new CornerRadius(0, 0, 0, 13),
+                    restColor: wallRestColor,
+                    solidColor: dangerColor,
+                    streakColor: Avalonia.Media.Colors.White,
+                    sweepStart: new RelativePoint(1, 0, RelativeUnit.Relative),
+                    sweepEnd: new RelativePoint(0, 1, RelativeUnit.Relative),
+                    isEnabled: true,
+                    tooltip: "Удалить",
+                    onClick: () =>
+                    {
+                        automationSettings.Rules.Remove(rule);
+                        automationStore.Save(automationSettings);
+                        RefreshRulesList();
+                        RefreshActiveNow();
+                    });
+
+                var leftWall = new Grid { RowDefinitions = new RowDefinitions("*,*") };
+                Grid.SetRow(editButton, 0);
+                Grid.SetRow(deleteButton, 1);
+                leftWall.Children.Add(editButton);
+                leftWall.Children.Add(deleteButton);
+                Grid.SetColumn(leftWall, 0);
+
+                var canMoveUp = index > 0;
+                var canMoveDown = index < automationSettings.Rules.Count - 1;
+
+                var moveUpGlyphBrush = new Avalonia.Media.SolidColorBrush();
+                var moveUpButton = BuildSweepWallButton(
+                    BuildChevronUpGlyph(12, 7, 2.2, moveUpGlyphBrush),
+                    moveUpGlyphBrush,
+                    glyphRestColor: mutedGlyphColor,
+                    glyphHoverColor: inkGlyphColor,
+                    cornerRadius: new CornerRadius(0, 13, 0, 0),
+                    restColor: wallRestColor,
+                    solidColor: moveHoverColor,
+                    streakColor: streakFaintColor,
+                    sweepStart: new RelativePoint(0, 1, RelativeUnit.Relative),
+                    sweepEnd: new RelativePoint(0, 0, RelativeUnit.Relative),
+                    isEnabled: canMoveUp,
+                    tooltip: "Сдвинуть выше",
+                    onClick: () =>
+                    {
+                        (automationSettings.Rules[index - 1], automationSettings.Rules[index]) =
+                            (automationSettings.Rules[index], automationSettings.Rules[index - 1]);
+                        automationStore.Save(automationSettings);
+                        RefreshRulesList();
+                        RefreshActiveNow();
+                    });
+
+                var moveDownGlyphBrush = new Avalonia.Media.SolidColorBrush();
+                var moveDownButton = BuildSweepWallButton(
+                    BuildChevronDownGlyph(12, 7, 2.2, moveDownGlyphBrush),
+                    moveDownGlyphBrush,
+                    glyphRestColor: mutedGlyphColor,
+                    glyphHoverColor: inkGlyphColor,
+                    cornerRadius: new CornerRadius(0, 0, 13, 0),
+                    restColor: wallRestColor,
+                    solidColor: moveHoverColor,
+                    streakColor: streakFaintColor,
+                    sweepStart: new RelativePoint(0, 0, RelativeUnit.Relative),
+                    sweepEnd: new RelativePoint(0, 1, RelativeUnit.Relative),
+                    isEnabled: canMoveDown,
+                    tooltip: "Сдвинуть ниже",
+                    onClick: () =>
+                    {
+                        (automationSettings.Rules[index + 1], automationSettings.Rules[index]) =
+                            (automationSettings.Rules[index], automationSettings.Rules[index + 1]);
+                        automationStore.Save(automationSettings);
+                        RefreshRulesList();
+                        RefreshActiveNow();
+                    });
+
+                var rightWall = new Grid { RowDefinitions = new RowDefinitions("*,*") };
+                Grid.SetRow(moveUpButton, 0);
+                Grid.SetRow(moveDownButton, 1);
+                rightWall.Children.Add(moveUpButton);
+                rightWall.Children.Add(moveDownButton);
+                Grid.SetColumn(rightWall, 2);
+
+                // Кружок-переключатель вкл/выкл — сам кликабельный (по фидбеку
+                // пользователя: "это же кнопка выключения правила"), центрирован
+                // по всей высоте блока имя+детали (не только по строке с именем).
+                var statusToggle = new Border
+                {
+                    Width = 15,
+                    Height = 15,
+                    CornerRadius = new CornerRadius(7.5),
+                    BorderThickness = new Thickness(1.5),
+                    Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 9, 0),
+                };
+
+                void RefreshStatusToggleVisual()
+                {
+                    statusToggle.BorderBrush = new Avalonia.Media.SolidColorBrush(rule.IsEnabled ? goodColor : faintColor);
+                    statusToggle.Background = rule.IsEnabled
+                        ? new Avalonia.Media.SolidColorBrush(goodColor)
+                        : Avalonia.Media.Brushes.Transparent;
+                    ToolTip.SetTip(statusToggle, rule.IsEnabled
+                        ? "Правило включено — нажмите, чтобы выключить"
+                        : "Правило выключено — нажмите, чтобы включить");
+                }
+                RefreshStatusToggleVisual();
+
+                statusToggle.PointerPressed += (_, e) =>
+                {
+                    e.Handled = true;
+                    rule.IsEnabled = !rule.IsEnabled;
+                    automationStore.Save(automationSettings);
+                    RefreshStatusToggleVisual();
+                    RefreshActiveNow();
+                };
+
                 var nameText = new TextBlock
                 {
                     Text = string.IsNullOrWhiteSpace(rule.Name) ? "(без названия)" : rule.Name,
                     FontWeight = Avalonia.Media.FontWeight.Bold,
-                    VerticalAlignment = VerticalAlignment.Center,
                 };
-                var enabledToggle = new CheckBox { Content = "вкл", IsChecked = rule.IsEnabled, VerticalAlignment = VerticalAlignment.Center };
-                var editButton = new Button { Content = "Изменить" };
-                var moveUpButton = new Button { Content = "▲", IsEnabled = index > 0 };
-                var moveDownButton = new Button { Content = "▼", IsEnabled = index < automationSettings.Rules.Count - 1 };
-                var removeButton = new Button { Content = "Удалить" };
-
-                editButton.Click += (_, _) => loadRuleIntoForm?.Invoke(rule);
-                moveUpButton.Click += (_, _) =>
-                {
-                    (automationSettings.Rules[index - 1], automationSettings.Rules[index]) =
-                        (automationSettings.Rules[index], automationSettings.Rules[index - 1]);
-                    automationStore.Save(automationSettings);
-                    RefreshRulesList();
-                    RefreshActiveNow();
-                };
-                moveDownButton.Click += (_, _) =>
-                {
-                    (automationSettings.Rules[index + 1], automationSettings.Rules[index]) =
-                        (automationSettings.Rules[index], automationSettings.Rules[index + 1]);
-                    automationStore.Save(automationSettings);
-                    RefreshRulesList();
-                    RefreshActiveNow();
-                };
-                enabledToggle.IsCheckedChanged += (_, _) =>
-                {
-                    rule.IsEnabled = enabledToggle.IsChecked ?? true;
-                    automationStore.Save(automationSettings);
-                    RefreshActiveNow();
-                };
-                removeButton.Click += (_, _) =>
-                {
-                    automationSettings.Rules.Remove(rule);
-                    automationStore.Save(automationSettings);
-                    RefreshRulesList();
-                    RefreshActiveNow();
-                };
-
-                Grid.SetColumn(nameText, 0);
-                Grid.SetColumn(enabledToggle, 1);
-                Grid.SetColumn(editButton, 2);
-                Grid.SetColumn(moveUpButton, 3);
-                Grid.SetColumn(moveDownButton, 4);
-                Grid.SetColumn(removeButton, 5);
-                titleRow.Children.Add(nameText);
-                titleRow.Children.Add(enabledToggle);
-                titleRow.Children.Add(editButton);
-                titleRow.Children.Add(moveUpButton);
-                titleRow.Children.Add(moveDownButton);
-                titleRow.Children.Add(removeButton);
-                cardPanel.Children.Add(titleRow);
 
                 var detailText = priorityText is null
                     ? $"{conditionsText} → {rule.Percent}% · {scopeText}"
                     : $"{conditionsText} → {rule.Percent}% · {scopeText} · {priorityText}";
-                cardPanel.Children.Add(new TextBlock { Text = detailText, TextWrapping = Avalonia.Media.TextWrapping.Wrap });
+
+                var textStack = new StackPanel { Spacing = 2 };
+                textStack.Children.Add(nameText);
+                textStack.Children.Add(new TextBlock { Text = detailText, TextWrapping = Avalonia.Media.TextWrapping.Wrap });
+
+                var centerGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*"), Margin = new Thickness(10, 8, 10, 8) };
+                Grid.SetColumn(statusToggle, 0);
+                Grid.SetColumn(textStack, 1);
+                centerGrid.Children.Add(statusToggle);
+                centerGrid.Children.Add(textStack);
+                Grid.SetColumn(centerGrid, 1);
+
+                cardGrid.Children.Add(leftWall);
+                cardGrid.Children.Add(centerGrid);
+                cardGrid.Children.Add(rightWall);
+                card.Child = cardGrid;
 
                 rulesListPanel.Children.Add(card);
             }
@@ -2202,7 +2492,14 @@ public partial class SettingsWindow : Window
             return row;
         });
 
-        var openAllButton = new Button { Content = "▼", Width = 32 };
+        var chevronBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0xA0, 0x80, 0x80, 0x80));
+        var openAllButton = new Button
+        {
+            Content = BuildChevronDownGlyph(10, 6, 1.6, chevronBrush),
+            Width = 32,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
         ToolTip.SetTip(openAllButton, "Показать список всех запущенных процессов");
         var refreshProcessesButton = new Button { Content = "Обновить список" };
 
