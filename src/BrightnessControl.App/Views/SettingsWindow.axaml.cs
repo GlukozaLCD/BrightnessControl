@@ -552,19 +552,57 @@ public partial class SettingsWindow : Window
             stickyListPanel.Children.Clear();
             foreach (var value in _traySettings.StickyValues.OrderBy(v => v).ToList())
             {
-                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-                row.Children.Add(new TextBlock { Text = $"{value}%", Width = 60, VerticalAlignment = VerticalAlignment.Center });
-
-                var removeButton = new Button { Content = "Удалить" };
-                removeButton.Click += (_, _) =>
+                // FP17 Фаза 2 — строка обёрнута в карточку-стену (тот же приём, что
+                // и у карточек правил/галереи иконки трея): удаление встроено в
+                // правый край карточки, а не отдельная текстовая кнопка сбоку.
+                var card = new Border
                 {
-                    _traySettings.StickyValues.Remove(value);
-                    _traySettingsStore.Save(_traySettings);
-                    RefreshStickyList();
+                    BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x40, 0x80, 0x80, 0x80)),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(14),
+                    ClipToBounds = true,
+                    MinHeight = 44,
                 };
-                row.Children.Add(removeButton);
+                card.Bind(Border.BackgroundProperty, this.GetResourceObservable("AppSurface"));
 
-                stickyListPanel.Children.Add(row);
+                var cardGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,34") };
+
+                var valueText = new TextBlock
+                {
+                    Text = $"{value}%",
+                    FontWeight = Avalonia.Media.FontWeight.Bold,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(12, 0, 0, 0),
+                };
+                Grid.SetColumn(valueText, 0);
+
+                var deleteGlyphBrush = new Avalonia.Media.SolidColorBrush();
+                var deleteButton = BuildSweepWallButton(
+                    BuildCrossGlyph(11, 2.0, deleteGlyphBrush),
+                    deleteGlyphBrush,
+                    glyphRestColor: ResolveThemeColor("AppMuted", Avalonia.Media.Color.Parse("#948FA3")),
+                    glyphHoverColor: ResolveThemeColor("AppDangerInk", Avalonia.Media.Colors.White),
+                    cornerRadius: new CornerRadius(0, 13, 13, 0),
+                    restColor: ResolveThemeColor("AppNeutralRest", Avalonia.Media.Color.FromArgb(0x0D, 0x94, 0x8F, 0xA3)),
+                    solidColor: ResolveThemeColor("AppDanger", Avalonia.Media.Color.Parse("#E85D6B")),
+                    streakColor: ResolveThemeColor("AppDangerInk", Avalonia.Media.Colors.White),
+                    sweepStart: new RelativePoint(1, 0, RelativeUnit.Relative),
+                    sweepEnd: new RelativePoint(0, 1, RelativeUnit.Relative),
+                    isEnabled: true,
+                    tooltip: "Удалить",
+                    onClick: () =>
+                    {
+                        _traySettings.StickyValues.Remove(value);
+                        _traySettingsStore.Save(_traySettings);
+                        RefreshStickyList();
+                    });
+                Grid.SetColumn(deleteButton, 1);
+
+                cardGrid.Children.Add(valueText);
+                cardGrid.Children.Add(deleteButton);
+                card.Child = cardGrid;
+
+                stickyListPanel.Children.Add(card);
             }
 
             if (_traySettings.StickyValues.Count == 0)
@@ -601,7 +639,7 @@ public partial class SettingsWindow : Window
     // расположена не строго по центру line box, из-за чего центрирование по
     // умолчанию давало видимое смещение влево-вниз. Линии центрируются по
     // РЕАЛЬНОЙ геометрии фигуры, поэтому не "плавают" в зависимости от шрифта.
-    private static Control BuildPlusGlyph(double size, double thickness, Avalonia.Media.IBrush stroke)
+    internal static Control BuildPlusGlyph(double size, double thickness, Avalonia.Media.IBrush stroke)
     {
         var half = size / 2;
         var canvas = new Canvas { Width = size, Height = size, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
@@ -650,7 +688,10 @@ public partial class SettingsWindow : Window
     // (FP10, скриншот пользователя), либо не рисовался шрифтом кнопки вовсе, либо
     // съезжал в крошечную точку в узкой 32px кнопке. Та же причина, по которой
     // плюс/крестик выше нарисованы линиями, а не текстовыми глифами.
-    private static Control BuildChevronDownGlyph(double width, double height, double thickness, Avalonia.Media.IBrush stroke)
+    // internal (не private) — переиспользуется из GlobalSliderPopup (FP17 Фаза 4,
+    // п.4: те же векторные шевроны/линии вместо текстовых "▼"/"▲"/"−"/"+", что уже
+    // применены здесь для карточки правил FP10 и других мест этого файла).
+    internal static Control BuildChevronDownGlyph(double width, double height, double thickness, Avalonia.Media.IBrush stroke)
     {
         var canvas = new Canvas { Width = width, Height = height, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         canvas.Children.Add(new Polyline
@@ -665,7 +706,7 @@ public partial class SettingsWindow : Window
     }
 
     // Зеркальный шеврон вверх — для кнопки "▲" в стене карточки правила (FP10).
-    private static Control BuildChevronUpGlyph(double width, double height, double thickness, Avalonia.Media.IBrush stroke)
+    internal static Control BuildChevronUpGlyph(double width, double height, double thickness, Avalonia.Media.IBrush stroke)
     {
         var canvas = new Canvas { Width = width, Height = height, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         canvas.Children.Add(new Polyline
@@ -679,9 +720,58 @@ public partial class SettingsWindow : Window
         return canvas;
     }
 
+    // Горизонтальные шевроны — та же форма, что вверх/вниз, повёрнутая на 90°
+    // (FP17: замена текстовых "◀"/"▶" в галерее форм иконки трея — векторный
+    // глиф, не текстовый символ, та же причина, что и с "▼" в другом месте).
+    private static Control BuildChevronLeftGlyph(double width, double height, double thickness, Avalonia.Media.IBrush stroke)
+    {
+        var canvas = new Canvas { Width = width, Height = height, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        canvas.Children.Add(new Polyline
+        {
+            Points = new Avalonia.Points { new Point(width, 0), new Point(0, height / 2), new Point(width, height) },
+            Stroke = stroke,
+            StrokeThickness = thickness,
+            StrokeLineCap = Avalonia.Media.PenLineCap.Round,
+            StrokeJoin = Avalonia.Media.PenLineJoin.Round,
+        });
+        return canvas;
+    }
+
+    private static Control BuildChevronRightGlyph(double width, double height, double thickness, Avalonia.Media.IBrush stroke)
+    {
+        var canvas = new Canvas { Width = width, Height = height, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        canvas.Children.Add(new Polyline
+        {
+            Points = new Avalonia.Points { new Point(0, 0), new Point(width, height / 2), new Point(0, height) },
+            Stroke = stroke,
+            StrokeThickness = thickness,
+            StrokeLineCap = Avalonia.Media.PenLineCap.Round,
+            StrokeJoin = Avalonia.Media.PenLineJoin.Round,
+        });
+        return canvas;
+    }
+
     // Упрощённый "карандаш" для кнопки "Изменить" в стене карточки правила
     // (FP10) — тот же язык, что у плюса/крестика/шеврона выше: несколько линий
     // на Canvas, а не текстовый глиф или сложная SVG-геометрия.
+    // FP17 Фаза 2, п.5 — векторная линия вместо текстового "−" у кнопки "скрыть
+    // процесс" (та же причина, что и у остальных глифов: текстовый символ мог
+    // не отрисоваться шрифтом кнопки, как уже было с "▼"). Без блика-анимации
+    // — решено избыточным для переходного popup автодополнения.
+    internal static Control BuildMinusGlyph(double size, double thickness, Avalonia.Media.IBrush stroke)
+    {
+        var canvas = new Canvas { Width = size, Height = size, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        canvas.Children.Add(new Line
+        {
+            StartPoint = new Point(0, size / 2),
+            EndPoint = new Point(size, size / 2),
+            Stroke = stroke,
+            StrokeThickness = thickness,
+            StrokeLineCap = Avalonia.Media.PenLineCap.Round,
+        });
+        return canvas;
+    }
+
     private static Control BuildEditGlyph(double size, double thickness, Avalonia.Media.IBrush stroke)
     {
         var canvas = new Canvas { Width = size, Height = size, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
@@ -843,26 +933,45 @@ public partial class SettingsWindow : Window
         };
         swatch.Bind(Border.BorderBrushProperty, this.GetResourceObservable("AppLineStrong"));
 
-        var changeButton = new Button { Content = "Изменить" };
-        changeButton.Click += async (_, _) =>
-        {
-            _suppressDeactivateClose = true;
-            try
+        // FP17 Фаза 2 — то же перо, что и у "Изменить" в карточке правил (FP10),
+        // просто в масштабе под эту кнопку — не встроено в стену (тут нет
+        // карточки-силуэта, как у списка правил/галереи), поэтому кнопка
+        // целиком круглая, в тон свотчу рядом с ней.
+        var editGlyphBrush = new Avalonia.Media.SolidColorBrush();
+        var changeButton = BuildSweepWallButton(
+            BuildEditGlyph(13, 1.8, editGlyphBrush),
+            editGlyphBrush,
+            glyphRestColor: ResolveThemeColor("AppMuted", Avalonia.Media.Color.Parse("#948FA3")),
+            glyphHoverColor: ResolveThemeColor("AppWarningInk", Avalonia.Media.Color.Parse("#241C02")),
+            cornerRadius: new CornerRadius(14),
+            restColor: ResolveThemeColor("AppNeutralRest", Avalonia.Media.Color.FromArgb(0x0D, 0x94, 0x8F, 0xA3)),
+            solidColor: ResolveThemeColor("AppWarning", Avalonia.Media.Color.Parse("#E8C23D")),
+            streakColor: Avalonia.Media.Colors.White,
+            sweepStart: new RelativePoint(1, 0, RelativeUnit.Relative),
+            sweepEnd: new RelativePoint(0, 1, RelativeUnit.Relative),
+            isEnabled: true,
+            tooltip: "Изменить",
+            onClick: async () =>
             {
-                var picker = new ColorPickerWindow(_appSettings.CustomAccentColorHex);
-                await picker.ShowDialog(this);
-
-                if (picker.ResultHex is { } hex)
+                _suppressDeactivateClose = true;
+                try
                 {
-                    swatch.Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse(hex));
-                    _accentColorService?.SetCustomAccentColor(hex);
+                    var picker = new ColorPickerWindow(_appSettings.CustomAccentColorHex);
+                    await picker.ShowDialog(this);
+
+                    if (picker.ResultHex is { } hex)
+                    {
+                        swatch.Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse(hex));
+                        _accentColorService?.SetCustomAccentColor(hex);
+                    }
                 }
-            }
-            finally
-            {
-                _suppressDeactivateClose = false;
-            }
-        };
+                finally
+                {
+                    _suppressDeactivateClose = false;
+                }
+            });
+        changeButton.Width = 28;
+        changeButton.Height = 28;
 
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         row.Children.Add(new TextBlock { Text = "Свой акцентный цвет:", VerticalAlignment = VerticalAlignment.Center, Width = 180 });
@@ -1034,6 +1143,15 @@ public partial class SettingsWindow : Window
         var accentBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0xF2, 0x90, 0x0C));
         var neutralBorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x40, 0x80, 0x80, 0x80));
         var handCursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand);
+
+        // FP17 Фаза 2 — те же цвета-стены, что уже у карточек правил (FP10):
+        // приглушённый тон покоя, чуть светлее при наведении, палитра НЕ
+        // меняется (стрелки "влево"/"вправо" — те же "move", не destructive/edit).
+        var wallRestColor = ResolveThemeColor("AppNeutralRest", Avalonia.Media.Color.FromArgb(0x0D, 0x94, 0x8F, 0xA3));
+        var wallHoverColor = ResolveThemeColor("AppNeutralHover", Avalonia.Media.Color.FromArgb(0x24, 0x94, 0x8F, 0xA3));
+        var wallGlyphRestColor = ResolveThemeColor("AppMuted", Avalonia.Media.Color.Parse("#948FA3"));
+        var wallGlyphHoverColor = ResolveThemeColor("AppInk", Avalonia.Media.Color.Parse("#F1EEF7"));
+        var wallStreakColor = Avalonia.Media.Color.FromArgb(0x1E, 0xFF, 0xFF, 0xFF);
 
         // SettingsWindow фиксированного размера (Width=760, CanResize="False" в
         // .axaml — увеличено с исходных 640 именно чтобы в галерею форм влезало
@@ -1268,43 +1386,44 @@ public partial class SettingsWindow : Window
                 // не как отдельные наклеенные поверх кружки.
                 var canMoveLeft = designIndex > 0;
                 var canMoveRight = designIndex < orderedIcons.Count - 1;
-                var arrowActiveBg = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x1C, 0x80, 0x80, 0x80));
-                var arrowInactiveBg = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x08, 0x80, 0x80, 0x80));
 
-                var leftArrow = new Border
-                {
-                    Width = 16,
-                    CornerRadius = new CornerRadius(7, 0, 0, 7),
-                    Background = canMoveLeft ? arrowActiveBg : arrowInactiveBg,
-                    Cursor = canMoveLeft ? handCursor : null,
-                    Child = new TextBlock
-                    {
-                        Text = "◀",
-                        FontSize = 9,
-                        Foreground = canMoveLeft ? mutedBrush : neutralBorderBrush,
-                        HorizontalAlignment = HorizontalAlignment.Center,
-                        VerticalAlignment = VerticalAlignment.Center,
-                    },
-                };
-                var rightArrow = new Border
-                {
-                    Width = 16,
-                    CornerRadius = new CornerRadius(0, 7, 7, 0),
-                    Background = canMoveRight ? arrowActiveBg : arrowInactiveBg,
-                    Cursor = canMoveRight ? handCursor : null,
-                    Child = new TextBlock
-                    {
-                        Text = "▶",
-                        FontSize = 9,
-                        Foreground = canMoveRight ? mutedBrush : neutralBorderBrush,
-                        HorizontalAlignment = HorizontalAlignment.Center,
-                        VerticalAlignment = VerticalAlignment.Center,
-                    },
-                };
-                ToolTip.SetTip(leftArrow, "Сдвинуть влево");
-                ToolTip.SetTip(rightArrow, "Сдвинуть вправо");
-                leftArrow.PointerPressed += (_, e) => { e.Handled = true; MoveDesign(designId, -1); };
-                rightArrow.PointerPressed += (_, e) => { e.Handled = true; MoveDesign(designId, 1); };
+                // FP17 Фаза 2 — тот же приём, что уже у карточек правил (FP10):
+                // узкая полоса встроена в стену самой карточки, векторный шеврон
+                // вместо текстового "◀"/"▶", блик-волна по направлению стрелки
+                // (влево → волна вправо-налево, вправо → волна влево-направо).
+                var leftGlyphBrush = new Avalonia.Media.SolidColorBrush();
+                var leftArrow = BuildSweepWallButton(
+                    BuildChevronLeftGlyph(6, 10, 1.8, leftGlyphBrush),
+                    leftGlyphBrush,
+                    glyphRestColor: wallGlyphRestColor,
+                    glyphHoverColor: wallGlyphHoverColor,
+                    cornerRadius: new CornerRadius(7, 0, 0, 7),
+                    restColor: wallRestColor,
+                    solidColor: wallHoverColor,
+                    streakColor: wallStreakColor,
+                    sweepStart: new RelativePoint(1, 0.5, RelativeUnit.Relative),
+                    sweepEnd: new RelativePoint(0, 0.5, RelativeUnit.Relative),
+                    isEnabled: canMoveLeft,
+                    tooltip: "Сдвинуть влево",
+                    onClick: () => MoveDesign(designId, -1));
+                leftArrow.Width = 16;
+
+                var rightGlyphBrush = new Avalonia.Media.SolidColorBrush();
+                var rightArrow = BuildSweepWallButton(
+                    BuildChevronRightGlyph(6, 10, 1.8, rightGlyphBrush),
+                    rightGlyphBrush,
+                    glyphRestColor: wallGlyphRestColor,
+                    glyphHoverColor: wallGlyphHoverColor,
+                    cornerRadius: new CornerRadius(0, 7, 7, 0),
+                    restColor: wallRestColor,
+                    solidColor: wallHoverColor,
+                    streakColor: wallStreakColor,
+                    sweepStart: new RelativePoint(0, 0.5, RelativeUnit.Relative),
+                    sweepEnd: new RelativePoint(1, 0.5, RelativeUnit.Relative),
+                    isEnabled: canMoveRight,
+                    tooltip: "Сдвинуть вправо",
+                    onClick: () => MoveDesign(designId, 1));
+                rightArrow.Width = 16;
 
                 var centerContent = new StackPanel
                 {
@@ -1380,22 +1499,26 @@ public partial class SettingsWindow : Window
 
                 // Масштаб — индивидуальный на каждую форму: скролл над карточкой, а не
                 // общий контрол на всю галерею.
+                // FP17 — раньше колесо меняло масштаб ЛЮБОЙ карточки под курсором,
+                // даже "проезжающей" под ним во время прокрутки всей страницы —
+                // событие перехватывалось раньше, чем долетало до внешнего
+                // ScrollViewer, и страница переставала прокручиваться, а масштаб
+                // менялся случайно. Теперь колесо действует только на карточку,
+                // которую перед этим явно ВЫБРАЛИ кликом ("клик-фокус перед
+                // взаимодействием", по решению пользователя) — остальные карточки
+                // не перехватывают событие, оно спокойно уходит на прокрутку страницы.
                 card.PointerWheelChanged += (_, e) =>
                 {
+                    if (!isSelected)
+                    {
+                        return;
+                    }
+
                     e.Handled = true;
                     var current = _traySettings.GetTrayIconScale(designId);
                     var next = Math.Clamp(current + (e.Delta.Y > 0 ? 5 : -5), 100, 170);
                     _traySettings.TrayIconScaleByDesign[designId] = next;
-
-                    if (isSelected)
-                    {
-                        ApplyLiveIcon();
-                    }
-                    else
-                    {
-                        _traySettingsStore.Save(_traySettings);
-                    }
-
+                    ApplyLiveIcon();
                     RefreshDesignGallery();
                 };
 
@@ -1525,39 +1648,47 @@ public partial class SettingsWindow : Window
                     RefreshDesignGallery();
                 };
 
-                // Тот же визуальный язык, что уже использован для "скрыть процесс" в
-                // профилях приложений — маленький серый кружок с крестиком в углу.
-                var removeGlyph = new Border
-                {
-                    Width = 14,
-                    Height = 14,
-                    CornerRadius = new CornerRadius(7),
-                    Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0x90, 0x90, 0x90)),
-                    HorizontalAlignment = HorizontalAlignment.Right,
-                    VerticalAlignment = VerticalAlignment.Top,
-                    Margin = new Thickness(0, -3, -3, 0),
-                    Cursor = handCursor,
-                    Child = BuildCrossGlyph(7, 1.4, Avalonia.Media.Brushes.White),
-                };
-                removeGlyph.PointerPressed += (_, e) =>
-                {
-                    e.Handled = true;
-                    _traySettings.TrayIconColors.Remove(hex);
-
-                    if (string.Equals(_traySettings.TrayIconColorHex, hex, StringComparison.OrdinalIgnoreCase)
-                        && _traySettings.TrayIconColors.Count > 0)
+                // FP17 Фаза 2 — тот же крестик, что и раньше, но с бликом при
+                // наведении (тон покоя не меняем — было решено консервативно, без
+                // ввода нового цвета, только блик).
+                var removeGlyphBrush = new Avalonia.Media.SolidColorBrush();
+                var removeGlyphRestColor = ResolveThemeColor("AppFaint", Avalonia.Media.Color.FromRgb(0x90, 0x90, 0x90));
+                var removeGlyph = BuildSweepWallButton(
+                    BuildCrossGlyph(7, 1.4, removeGlyphBrush),
+                    removeGlyphBrush,
+                    glyphRestColor: Avalonia.Media.Colors.White,
+                    glyphHoverColor: Avalonia.Media.Colors.White,
+                    cornerRadius: new CornerRadius(7),
+                    restColor: removeGlyphRestColor,
+                    solidColor: removeGlyphRestColor,
+                    streakColor: Avalonia.Media.Colors.White,
+                    sweepStart: new RelativePoint(1, 0, RelativeUnit.Relative),
+                    sweepEnd: new RelativePoint(0, 1, RelativeUnit.Relative),
+                    isEnabled: true,
+                    tooltip: "Удалить цвет",
+                    onClick: () =>
                     {
-                        _traySettings.TrayIconColorHex = _traySettings.TrayIconColors[0];
-                        ApplyLiveIcon();
-                        RefreshDesignGallery();
-                    }
-                    else
-                    {
-                        _traySettingsStore.Save(_traySettings);
-                    }
+                        _traySettings.TrayIconColors.Remove(hex);
 
-                    RefreshColorRow();
-                };
+                        if (string.Equals(_traySettings.TrayIconColorHex, hex, StringComparison.OrdinalIgnoreCase)
+                            && _traySettings.TrayIconColors.Count > 0)
+                        {
+                            _traySettings.TrayIconColorHex = _traySettings.TrayIconColors[0];
+                            ApplyLiveIcon();
+                            RefreshDesignGallery();
+                        }
+                        else
+                        {
+                            _traySettingsStore.Save(_traySettings);
+                        }
+
+                        RefreshColorRow();
+                    });
+                removeGlyph.Width = 14;
+                removeGlyph.Height = 14;
+                removeGlyph.HorizontalAlignment = HorizontalAlignment.Right;
+                removeGlyph.VerticalAlignment = VerticalAlignment.Top;
+                removeGlyph.Margin = new Thickness(0, -3, -3, 0);
 
                 var cell = new Grid { Margin = new Thickness(0, 0, 4, 4) };
                 cell.Children.Add(swatch);
@@ -1565,43 +1696,49 @@ public partial class SettingsWindow : Window
                 colorRow.Children.Add(cell);
             }
 
-            var addButton = new Border
-            {
-                Width = 28,
-                Height = 28,
-                CornerRadius = new CornerRadius(14),
-                // Прозрачный, но НЕ null — тот же баг, что уже чинили для карточек
-                // форм: Border без явного фона не ловит клики в "пустых" местах,
-                // только на самих детях, так что клик срабатывал лишь если попасть
-                // точно в тонкий символ "+", а не по всему кругу.
-                Background = Avalonia.Media.Brushes.Transparent,
-                BorderThickness = new Thickness(1),
-                BorderBrush = neutralBorderBrush,
-                Cursor = handCursor,
-                Margin = new Thickness(0, 0, 4, 4),
-                Child = BuildPlusGlyph(14, 2, mutedBrush),
-            };
-            ToolTip.SetTip(addButton, "Добавить свой цвет");
-            addButton.PointerPressed += async (_, _) =>
-            {
-                _suppressDeactivateClose = true;
-                try
+            // FP17 Фаза 2 — тот же плюс, что и раньше, но с бликом при наведении;
+            // палитра НЕ меняется (консервативное решение, как и для removeGlyph
+            // выше) — граница-контур сохранена отдельно, BuildSweepWallButton её
+            // не задаёт сам.
+            var addGlyphBrush = new Avalonia.Media.SolidColorBrush();
+            var addButton = BuildSweepWallButton(
+                BuildPlusGlyph(14, 2, addGlyphBrush),
+                addGlyphBrush,
+                glyphRestColor: ResolveThemeColor("AppMuted", Avalonia.Media.Color.Parse("#948FA3")),
+                glyphHoverColor: ResolveThemeColor("AppInk", Avalonia.Media.Color.Parse("#F1EEF7")),
+                cornerRadius: new CornerRadius(14),
+                restColor: ResolveThemeColor("AppNeutralRest", Avalonia.Media.Color.FromArgb(0x0D, 0x94, 0x8F, 0xA3)),
+                solidColor: ResolveThemeColor("AppNeutralHover", Avalonia.Media.Color.FromArgb(0x24, 0x94, 0x8F, 0xA3)),
+                streakColor: Avalonia.Media.Color.FromArgb(0x1E, 0xFF, 0xFF, 0xFF),
+                sweepStart: new RelativePoint(1, 0, RelativeUnit.Relative),
+                sweepEnd: new RelativePoint(0, 1, RelativeUnit.Relative),
+                isEnabled: true,
+                tooltip: "Добавить свой цвет",
+                onClick: async () =>
                 {
-                    var picker = new ColorPickerWindow(_traySettings.TrayIconColorHex);
-                    await picker.ShowDialog(this);
-
-                    if (picker.ResultHex is { } hex && !_traySettings.TrayIconColors.Contains(hex, StringComparer.OrdinalIgnoreCase))
+                    _suppressDeactivateClose = true;
+                    try
                     {
-                        _traySettings.TrayIconColors.Add(hex);
-                        _traySettingsStore.Save(_traySettings);
-                        RefreshColorRow();
+                        var picker = new ColorPickerWindow(_traySettings.TrayIconColorHex);
+                        await picker.ShowDialog(this);
+
+                        if (picker.ResultHex is { } hex && !_traySettings.TrayIconColors.Contains(hex, StringComparer.OrdinalIgnoreCase))
+                        {
+                            _traySettings.TrayIconColors.Add(hex);
+                            _traySettingsStore.Save(_traySettings);
+                            RefreshColorRow();
+                        }
                     }
-                }
-                finally
-                {
-                    _suppressDeactivateClose = false;
-                }
-            };
+                    finally
+                    {
+                        _suppressDeactivateClose = false;
+                    }
+                });
+            addButton.Width = 28;
+            addButton.Height = 28;
+            addButton.BorderThickness = new Thickness(1);
+            addButton.BorderBrush = neutralBorderBrush;
+            addButton.Margin = new Thickness(0, 0, 4, 4);
             colorRow.Children.Add(addButton);
         }
 
@@ -1665,7 +1802,8 @@ public partial class SettingsWindow : Window
         var canvas = new Canvas { Height = 44, Background = Avalonia.Media.Brushes.Transparent };
         var trackBorder = new Border
         {
-            CornerRadius = new CornerRadius(6),
+            // FP17 — сведено к "мелкому" уровню шкалы радиусов (8), было 6.
+            CornerRadius = new CornerRadius(8),
             BorderThickness = new Thickness(1),
             ClipToBounds = true,
             Child = canvas,
@@ -1942,6 +2080,19 @@ public partial class SettingsWindow : Window
         return (widget, GetValue, SetValue);
     }
 
+    // FP17 — читает АКТУАЛЬНОЕ значение именованного токена ТЕКУЩЕЙ темы (не
+    // зашитый литерал). Снимок на момент вызова, не живая подписка — годится
+    // там, где значение сразу же используется для одноразовой инициализации
+    // мутируемой SolidColorBrush (см. BuildSweepWallButton: та же кисть потом
+    // ещё и перекрашивается вручную по наведению, поэтому полноценный Bind()
+    // сюда не встроить без конфликта с этими ручными перезаписями) — для
+    // простых, не мутируемых свойств вместо этого используется обычный Bind()
+    // на GetResourceObservable (см. card.Background в RefreshRulesList).
+    private Avalonia.Media.Color ResolveThemeColor(string resourceKey, Avalonia.Media.Color fallback) =>
+        this.TryFindResource(resourceKey, out var value) && value is Avalonia.Media.SolidColorBrush brush
+            ? brush.Color
+            : fallback;
+
     private void BuildAutomationTab(StackPanel root)
     {
         var automationStore = new JsonFileAutomationStore();
@@ -2025,20 +2176,24 @@ public partial class SettingsWindow : Window
         AutomationRule? editingRule = null;
         Action<AutomationRule>? loadRuleIntoForm = null;
 
-        // FP10 — цвета для карточки-с-стенами (см. Artifact-макет, обсуждённый с
-        // пользователем): приглушённый тон покоя общий у всех кнопок в стене,
+        // FP10/FP17 — цвета для карточки-с-стенами читаются из именованных
+        // токенов темы (App.axaml) через ResolveThemeColor, а не зашиты
+        // литералом — раньше несколько значений были буквально СКОПИРОВАНЫ из
+        // тёмной темы и молча ломались при переключении на светлую (см.
+        // PLAN_FP17). Приглушённый тон покоя общий у всех кнопок в стене,
         // Изменить/Удалить заливаются насыщенным цветом при наведении, "▲"/"▼"
         // палитру НЕ меняют (только чуть светлее той же приглушённой заливки).
-        var wallRestColor = Avalonia.Media.Color.FromArgb(0x0D, 0x94, 0x8F, 0xA3);
-        var editColor = Avalonia.Media.Color.Parse("#E8C23D");
-        var editInkColor = Avalonia.Media.Color.Parse("#241C02");
-        var dangerColor = Avalonia.Media.Color.Parse("#E85D6B");
-        var moveHoverColor = Avalonia.Media.Color.FromArgb(0x24, 0x94, 0x8F, 0xA3);
+        var wallRestColor = ResolveThemeColor("AppNeutralRest", Avalonia.Media.Color.FromArgb(0x0D, 0x94, 0x8F, 0xA3));
+        var editColor = ResolveThemeColor("AppWarning", Avalonia.Media.Color.Parse("#E8C23D"));
+        var editInkColor = ResolveThemeColor("AppWarningInk", Avalonia.Media.Color.Parse("#241C02"));
+        var dangerColor = ResolveThemeColor("AppDanger", Avalonia.Media.Color.Parse("#E85D6B"));
+        var dangerInkColor = ResolveThemeColor("AppDangerInk", Avalonia.Media.Colors.White);
+        var moveHoverColor = ResolveThemeColor("AppNeutralHover", Avalonia.Media.Color.FromArgb(0x24, 0x94, 0x8F, 0xA3));
         var streakFaintColor = Avalonia.Media.Color.FromArgb(0x1E, 0xFF, 0xFF, 0xFF);
-        var mutedGlyphColor = Avalonia.Media.Color.Parse("#948FA3");
-        var inkGlyphColor = Avalonia.Media.Color.Parse("#F1EEF7");
-        var goodColor = Avalonia.Media.Color.Parse("#7FBF6A");
-        var faintColor = Avalonia.Media.Color.Parse("#6B6678");
+        var mutedGlyphColor = ResolveThemeColor("AppMuted", Avalonia.Media.Color.Parse("#948FA3"));
+        var inkGlyphColor = ResolveThemeColor("AppInk", Avalonia.Media.Color.Parse("#F1EEF7"));
+        var goodColor = ResolveThemeColor("AppGood", Avalonia.Media.Color.Parse("#7FBF6A"));
+        var faintColor = ResolveThemeColor("AppFaint", Avalonia.Media.Color.Parse("#6B6678"));
 
         void RefreshRulesList()
         {
@@ -2081,12 +2236,15 @@ public partial class SettingsWindow : Window
                 // внутренние углы полос торчат за скруглённые внешние углы карточки.
                 var card = new Border
                 {
-                    Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0x20, 0x1D, 0x28)),
                     BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x40, 0x80, 0x80, 0x80)),
                     BorderThickness = new Thickness(1),
                     CornerRadius = new CornerRadius(14),
                     ClipToBounds = true,
                 };
+                // FP17 — фон карточки живо привязан к AppSurface (тот же баг, что и у
+                // цветов кнопок: раньше был буквально скопированным литералом тёмной
+                // темы, не адаптировался в светлой).
+                card.Bind(Border.BackgroundProperty, this.GetResourceObservable("AppSurface"));
                 var cardGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("34,*,34") };
 
                 var editGlyphBrush = new Avalonia.Media.SolidColorBrush();
@@ -2110,11 +2268,11 @@ public partial class SettingsWindow : Window
                     BuildCrossGlyph(11, 2.0, deleteGlyphBrush),
                     deleteGlyphBrush,
                     glyphRestColor: mutedGlyphColor,
-                    glyphHoverColor: Avalonia.Media.Colors.White,
+                    glyphHoverColor: dangerInkColor,
                     cornerRadius: new CornerRadius(0, 0, 0, 13),
                     restColor: wallRestColor,
                     solidColor: dangerColor,
-                    streakColor: Avalonia.Media.Colors.White,
+                    streakColor: dangerInkColor,
                     sweepStart: new RelativePoint(1, 0, RelativeUnit.Relative),
                     sweepEnd: new RelativePoint(0, 1, RelativeUnit.Relative),
                     isEnabled: true,
@@ -2271,7 +2429,10 @@ public partial class SettingsWindow : Window
         {
             BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromArgb(0x40, 0x80, 0x80, 0x80)),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4),
+            // FP17 — сведено к "крупному" уровню шкалы радиусов (14, тот же, что и
+            // у карточек правил над этой формой), было 4 — раньше форма добавления
+            // визуально не совпадала по скруглению со списком правил над ней.
+            CornerRadius = new CornerRadius(14),
             Padding = new Thickness(12),
         };
         var newRulePanel = new StackPanel { Spacing = 8 };
@@ -2369,7 +2530,10 @@ public partial class SettingsWindow : Window
                     Width = 24,
                     Height = 24,
                     CornerRadius = new CornerRadius(12),
-                    Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0x2E, 0x8B, 0x3D)),
+                    // FP17 — был другой зелёный (#2E8B3D) для того же по смыслу
+                    // "+"-глифа, что и у точечного восстановления процесса ниже
+                    // (#3CA050) — сведено к одному тону.
+                    Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0x3C, 0xA0, 0x50)),
                     Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand),
                     Child = new TextBlock
                     {
@@ -2457,6 +2621,7 @@ public partial class SettingsWindow : Window
         // Каждый пункт списка — имя процесса + серый кружок с "−" для скрытия
         // ненужных процессов из подсказок (например, служебных). Скрытые запоминаются
         // в AppSettings.HiddenProcessNames и не показываются, пока их явно не вернуть.
+        var hideGlyphBg = ResolveThemeColor("AppFaint", Avalonia.Media.Color.FromRgb(0x90, 0x90, 0x90));
         processAutoComplete.ItemTemplate = new FuncDataTemplate<string>((name, _) =>
         {
             var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(2) };
@@ -2467,16 +2632,9 @@ public partial class SettingsWindow : Window
                 Width = 16,
                 Height = 16,
                 CornerRadius = new CornerRadius(8),
-                Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0x90, 0x90, 0x90)),
+                Background = new Avalonia.Media.SolidColorBrush(hideGlyphBg),
                 Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand),
-                Child = new TextBlock
-                {
-                    Text = "−",
-                    Foreground = Avalonia.Media.Brushes.White,
-                    FontSize = 10,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    VerticalAlignment = VerticalAlignment.Center,
-                },
+                Child = BuildMinusGlyph(8, 1.6, Avalonia.Media.Brushes.White),
             };
             hideGlyph.PointerPressed += (_, e) =>
             {
@@ -2921,24 +3079,44 @@ public partial class SettingsWindow : Window
     // nameColumnWidth — под длинные названия мониторов в узком поповере название
     // едет "бегущей строкой", а не обрезается; в широком окне настроек места и так
     // хватает, поэтому запас пошире и анимация практически никогда не включается.
+    // Единственный вызывающий (GlobalSliderPopup) — окно уже отмасштабировано
+    // (FP17 Фаза 3), поэтому 15px зашито прямо здесь, без отдельного параметра.
     internal static Slider AddSliderRow(StackPanel root, string label, int initialPercent, int tickStep, Action<int> onChanged, double nameColumnWidth = 360, bool allowForceResync = false)
-        => AddSliderRow(root, BuildMarqueeLabel(label, nameColumnWidth), initialPercent, tickStep, onChanged, allowForceResync);
+        => AddSliderRow(root, BuildMarqueeLabel(label, nameColumnWidth, fontSize: 15), initialPercent, tickStep, onChanged, allowForceResync);
 
     // Перегрузка, принимающая уже готовый control вместо голой строки — нужна
     // MonitorSlidersPopup (FP8/переименование мониторов), где название должно быть
     // кликабельным (переключается в поле ввода) и нести маленькую иконку пера, а
     // не просто быть бегущей строкой без взаимодействия.
-    internal static Slider AddSliderRow(StackPanel root, Control nameLabel, int initialPercent, int tickStep, Action<int> onChanged, bool allowForceResync = false)
+    // trailingAccessory — необязательный контрол (FP17 Фаза 3: замочек блокировки
+    // монитора), встаёт СЛЕВА от процента, единой группой у правого края строки —
+    // согласовано с пользователем по макету (вариант C: "справа, у процента").
+    // Только MonitorSlidersPopup передаёт значение; остальные вызовы — null,
+    // поведение не меняется.
+    internal static Slider AddSliderRow(StackPanel root, Control nameLabel, int initialPercent, int tickStep, Action<int> onChanged, bool allowForceResync = false, Control? trailingAccessory = null)
     {
         var headerRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         // Ширина ФИКСИРОВАНА (не по содержимому) — иначе "Auto"-колонка меняла размер
         // на каждый тик процента (9% уже, 100% шире), сосед в "*"-колонке от этого
         // ужимался/расширялся и дёргался при каждом изменении яркости.
-        var percentLabel = new TextBlock { Text = $"{initialPercent}%", Width = 42, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+        // FP17 Фаза 3 — 52/15px вместо 42/по умолчанию (масштаб +23%, согласовано).
+        var percentLabel = new TextBlock { Text = $"{initialPercent}%", Width = 52, FontSize = 15, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(nameLabel, 0);
-        Grid.SetColumn(percentLabel, 1);
         headerRow.Children.Add(nameLabel);
-        headerRow.Children.Add(percentLabel);
+
+        if (trailingAccessory is null)
+        {
+            Grid.SetColumn(percentLabel, 1);
+            headerRow.Children.Add(percentLabel);
+        }
+        else
+        {
+            var trailingGroup = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+            trailingGroup.Children.Add(trailingAccessory);
+            trailingGroup.Children.Add(percentLabel);
+            Grid.SetColumn(trailingGroup, 1);
+            headerRow.Children.Add(trailingGroup);
+        }
 
         // FP15 — клик по проценту принудительно ПЕРЕОТПРАВЛЯЕТ ТЕКУЩЕЕ
         // значение на все мониторы, без изменения самого числа: тот же
@@ -2966,6 +3144,14 @@ public partial class SettingsWindow : Window
             TickFrequency = tickStep,
             IsSnapToTickEnabled = true,
         };
+        // FP17 Фаза 3 — увеличенный трек/бегунок (+23%), только для этих двух
+        // окон: остальные слайдеры приложения (вкладки SettingsWindow) продолжают
+        // использовать обычный {x:Type Slider} без правки, AddSliderRow — их
+        // единственный вызывающий (см. комментарий у trailingAccessory выше).
+        if (root.TryFindResource("ScaledSliderTheme", out var scaledSliderTheme) && scaledSliderTheme is Avalonia.Styling.ControlTheme controlTheme)
+        {
+            slider.Theme = controlTheme;
+        }
 
         // Всплывающий пузырёк с процентом прямо над кружком слайдера — статичная
         // подпись "название: процент" не влезает в узкий поповер (см. percentLabel
@@ -2977,17 +3163,18 @@ public partial class SettingsWindow : Window
         // количества цифр (9% против 100%), из-за чего пузырёк ощутимо "шатался"
         // при перетаскивании. С фиксированным размером делитель в формуле центрирования
         // всегда один и тот же — дрожи по X больше нет.
-        const double bubbleWidth = 34;
-        const double bubbleBodyHeight = 20;
-        const double bubbleTailSize = 10;
-        const double bubbleGap = 3;
+        // FP17 Фаза 3 — 42/25/12/4 вместо 34/20/10/3 (масштаб +23%, согласовано).
+        const double bubbleWidth = 42;
+        const double bubbleBodyHeight = 25;
+        const double bubbleTailSize = 12;
+        const double bubbleGap = 4;
         const double bubbleTotalHeight = bubbleBodyHeight + bubbleTailSize / 2;
 
         var bubbleText = new TextBlock
         {
             Text = $"{initialPercent}%",
             Foreground = Avalonia.Media.Brushes.White,
-            FontSize = 11,
+            FontSize = 13,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
@@ -2996,7 +3183,8 @@ public partial class SettingsWindow : Window
         {
             Width = bubbleWidth,
             Height = bubbleBodyHeight,
-            CornerRadius = new CornerRadius(5),
+            // FP17 — сведено к "мелкому" уровню шкалы радиусов (8), было 5.
+            CornerRadius = new CornerRadius(8),
             Background = bubbleBrush,
             Child = bubbleText,
             HorizontalAlignment = HorizontalAlignment.Left,
@@ -3159,21 +3347,33 @@ public partial class SettingsWindow : Window
         }
 
         // Padding=0 — общий Button ControlTheme (FP12) задаёт Padding="14,8" для
-        // обычных текстовых кнопок ("Сохранить" и т.п.); при ширине всего 32px
-        // это почти не оставляет места самому символу "−"/"+", и он выглядит
-        // как еле заметная точка.
+        // обычных текстовых кнопок ("Сохранить" и т.п.); в узкой квадратной кнопке
+        // это почти не оставляет места самому символу "−"/"+".
+        // FP17 Фаза 4, п.4 — векторные глифы вместо текстовых "−"/"+" (тот же
+        // класс риска, что уже реально стрельнул с "▼": не гарантирован рисунок
+        // символа шрифтом кнопки в узкой кнопке).
+        // AddSliderRow — static-метод (переиспользуется из SettingsWindow и
+        // GlobalSliderPopup/MonitorSlidersPopup), поэтому цвет резолвится через
+        // root.TryFindResource (root уже подключён к дереву окна), а не через
+        // ResolveThemeColor (тот — инстанс-метод конкретно SettingsWindow).
+        var stepperGlyphColor = root.TryFindResource("AppInk", out var appInkRes) && appInkRes is Avalonia.Media.SolidColorBrush appInkBrush
+            ? appInkBrush.Color
+            : Avalonia.Media.Colors.White;
+        var minusGlyphBrush = new Avalonia.Media.SolidColorBrush(stepperGlyphColor);
+        var plusGlyphBrush = new Avalonia.Media.SolidColorBrush(stepperGlyphColor);
+        // FP17 Фаза 3 — 38/12/1.8 вместо 32/10/1.6 (масштаб +23%, согласовано).
         var minusButton = new Button
         {
-            Content = "−",
-            Width = 32,
+            Content = BuildMinusGlyph(12, 1.8, minusGlyphBrush),
+            Width = 38,
             Padding = new Thickness(0),
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
         };
         var plusButton = new Button
         {
-            Content = "+",
-            Width = 32,
+            Content = BuildPlusGlyph(12, 1.8, plusGlyphBrush),
+            Width = 38,
             Padding = new Thickness(0),
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
@@ -3265,7 +3465,10 @@ public partial class SettingsWindow : Window
         return best;
     }
 
-    internal static Control BuildMarqueeLabel(string text, double width)
+    // fontSize — необязательный явный override (FP17 Фаза 3: окна слайдеров
+    // используют увеличенный шрифт 15px, без этого параметра остальные вызовы
+    // продолжают работать со стандартным размером темы, как и раньше).
+    internal static Control BuildMarqueeLabel(string text, double width, double? fontSize = null)
     {
         var textBlock = new TextBlock
         {
@@ -3273,6 +3476,10 @@ public partial class SettingsWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             TextWrapping = Avalonia.Media.TextWrapping.NoWrap,
         };
+        if (fontSize.HasValue)
+        {
+            textBlock.FontSize = fontSize.Value;
+        }
 
         // Сколько символов от offset реально помещается в width — раньше это была
         // грубая оценка "7px на символ", независимая от реального шрифта. Проблема:

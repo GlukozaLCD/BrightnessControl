@@ -64,14 +64,13 @@ public partial class GlobalSliderPopup : Window
         var root = this.FindControl<StackPanel>("Root")!;
 
         var headerRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        var title = new TextBlock { Text = "Яркость", FontWeight = Avalonia.Media.FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center };
+        var title = new TextBlock { Text = "Яркость", FontSize = 15, FontWeight = Avalonia.Media.FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center };
         var expandButton = new Button
         {
-            Content = "▼",
-            Width = 28,
-            Height = 28,
+            Content = BuildExpandGlyph(up: false),
+            Width = 34,
+            Height = 34,
             Padding = new Thickness(0),
-            FontSize = 12,
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
         };
@@ -90,7 +89,8 @@ public partial class GlobalSliderPopup : Window
         // "сломанной строки", которую не решали ни FormattedText, ни отказ от
         // RenderTransform/ClipToBounds: дело было не в механике бегущей строки, а в
         // одном пропущенном аргументе.
-        const double nameColumnWidth = 160;
+        // FP17 Фаза 3 — 196 вместо 160 (тот же масштаб +23%, что и у всего окна).
+        const double nameColumnWidth = 196;
         SettingsWindow.AddSliderRow(root, "Все мониторы", ComputeAveragePercent(), _sliderStepPercent, percent =>
         {
             _monitorSlidersPopup?.SetAllSliders(percent);
@@ -115,14 +115,32 @@ public partial class GlobalSliderPopup : Window
             _monitorSlidersPopup = null;
             if (_expandButton is not null)
             {
-                _expandButton.Content = "▼";
+                _expandButton.Content = BuildExpandGlyph(up: false);
             }
         };
         popup.Deactivated += (_, _) => Dispatcher.UIThread.Post(EvaluateShouldClose);
 
         var roughHeightGuess = Math.Max(1, _controller.Monitors.Count) * 68;
         popup.ShowAbove(Position, (int)Width, roughHeightGuess);
-        _expandButton!.Content = "▲";
+        _expandButton!.Content = BuildExpandGlyph(up: true);
+    }
+
+    // FP17 Фаза 4, п.4 — векторный шеврон вместо текстовых "▼"/"▲" (тот же класс
+    // риска, что уже реально стрельнул в другом месте: символ мог не нарисоваться
+    // шрифтом кнопки). Переиспользует BuildChevronDownGlyph/BuildChevronUpGlyph из
+    // SettingsWindow — тот же визуальный язык, что и у остальных шевронов в
+    // приложении, просто в своём масштабе под 28px кнопку.
+    private Control BuildExpandGlyph(bool up)
+    {
+        var color = this.TryFindResource("AppInk", out var res) && res is Avalonia.Media.SolidColorBrush brush
+            ? brush.Color
+            : Avalonia.Media.Colors.White;
+        var stroke = new Avalonia.Media.SolidColorBrush(color);
+        // FP17 Фаза 3 — (12,7,2.2) вместо (10,6,1.8): та же увеличенная шкала
+        // шеврона, что уже используется для "▲"/"▼" в карточке правил FP10.
+        return up
+            ? SettingsWindow.BuildChevronUpGlyph(12, 7, 2.2, stroke)
+            : SettingsWindow.BuildChevronDownGlyph(12, 7, 2.2, stroke);
     }
 
     // Два независимых top-level окна должны вести себя как одно целое: клик по

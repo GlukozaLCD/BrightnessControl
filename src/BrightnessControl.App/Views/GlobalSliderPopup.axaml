@@ -2,13 +2,15 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="BrightnessControl.App.Views.GlobalSliderPopup"
         Title="BrightnessControl"
-        Width="260"
+        Width="320"
         SizeToContent="Height"
         CanResize="False"
         WindowDecorations="None"
         ShowInTaskbar="False"
         Topmost="True">
+    <!-- FP17 Фаза 3 — масштаб окна увеличен на ~23% (260→320, поля 14→18,
+         промежутки 8→10), согласовано с пользователем по макету (вариант C). -->
     <Border BorderBrush="#40808080" BorderThickness="1" Background="{DynamicResource AppWindowBackground}">
-        <StackPanel x:Name="Root" Margin="14" Spacing="8" />
+        <StackPanel x:Name="Root" Margin="18" Spacing="10" />
     </Border>
 </Window>

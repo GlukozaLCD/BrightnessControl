@@ -31,7 +31,8 @@
                         Grid.Column="1"
                         Width="170"
                         HorizontalAlignment="Right"
-                        VerticalAlignment="Top">
+                        VerticalAlignment="Stretch"
+                        Background="{DynamicResource AppWindowBackground}">
                     <DockPanel>
                         <Button x:Name="NavFlipButton"
                                 DockPanel.Dock="Top"

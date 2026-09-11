@@ -49,7 +49,11 @@ public partial class MonitorSlidersPopup : Window
     private void BuildContent()
     {
         var root = this.FindControl<StackPanel>("Root")!;
-        const double nameColumnWidth = 160;
+        // FP17 Фаза 3 — 190 вместо 160: замочек больше не отнимает место у
+        // названия (переехал вправо, к проценту — см. trailingAccessory ниже),
+        // поэтому доступная под название ширина не просто масштабирована на
+        // +23%, а ещё и выросла за счёт освободившегося места замочка.
+        const double nameColumnWidth = 190;
         var monitorNameStore = new MonitorNameStore();
         var monitorNames = monitorNameStore.Load();
 
@@ -58,18 +62,14 @@ public partial class MonitorSlidersPopup : Window
             var current = _controller.GetBrightness(monitor)?.Percent ?? 50;
             var nameControl = BuildEditableMonitorLabel(monitor, monitorNames, monitorNameStore, nameColumnWidth);
 
-            // FP14 — "замочек" на яркость: маленький кружок перед названием
-            // монитора (тот же визуальный язык, что уже используют
-            // статус-индикаторы в приложении — залитый кружок = состояние
-            // включено). Собран здесь же, а не как правка общего
-            // SettingsWindow.AddSliderRow — лок нужен ТОЛЬКО в этом окне, не
-            // в GlobalSliderPopup/остальных вызовах.
+            // FP14/FP17 Фаза 3 — "замочек" на яркость. Раньше стоял ПЕРЕД
+            // названием монитора; согласовано по макету перенести к правому
+            // краю строки, рядом с процентом (trailingAccessory в
+            // AddSliderRow) — освобождает левый край для самого названия и
+            // читается как отдельный "столбец состояния", а не часть имени.
             var lockToggle = BuildLockToggle(monitor);
-            var nameWithLock = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-            nameWithLock.Children.Add(lockToggle);
-            nameWithLock.Children.Add(nameControl);
 
-            var slider = SettingsWindow.AddSliderRow(root, nameWithLock, current, _sliderStepPercent, percent =>
+            var slider = SettingsWindow.AddSliderRow(root, nameControl, current, _sliderStepPercent, percent =>
             {
                 if (!_perMonitorAppliers.TryGetValue(monitor.DeviceId, out var applier))
                 {
@@ -80,7 +80,7 @@ public partial class MonitorSlidersPopup : Window
                 }
 
                 applier.Request(percent);
-            });
+            }, trailingAccessory: lockToggle);
             _monitorSliders.Add((monitor, slider));
         }
     }
@@ -94,10 +94,12 @@ public partial class MonitorSlidersPopup : Window
     // зафиксировано, только контур приглушённым цветом = не зафиксировано.
     private Control BuildLockToggle(MonitorInfo monitor)
     {
-        const double canvasSize = 15;
-        const double shackleSize = 8;
-        const double bodyWidth = 12;
-        const double bodyHeight = 8;
+        // FP17 Фаза 3 — 17/9/14/9/1.8 вместо 15/8/12/8/1.6 (масштаб +23%,
+        // согласовано по макету вместе с переносом к правому краю строки).
+        const double canvasSize = 17;
+        const double shackleSize = 9;
+        const double bodyWidth = 14;
+        const double bodyHeight = 9;
 
         var canvas = new Canvas
         {
@@ -112,7 +114,7 @@ public partial class MonitorSlidersPopup : Window
             Width = shackleSize,
             Height = shackleSize,
             Fill = Brushes.Transparent,
-            StrokeThickness = 1.6,
+            StrokeThickness = 1.8,
         };
         Canvas.SetLeft(shackle, (canvasSize - shackleSize) / 2);
         Canvas.SetTop(shackle, 1);
@@ -122,7 +124,7 @@ public partial class MonitorSlidersPopup : Window
             Width = bodyWidth,
             Height = bodyHeight,
             CornerRadius = new CornerRadius(2),
-            BorderThickness = new Thickness(1.6),
+            BorderThickness = new Thickness(1.8),
         };
         Canvas.SetLeft(body, (canvasSize - bodyWidth) / 2);
         Canvas.SetTop(body, canvasSize - bodyHeight - 1);
@@ -144,7 +146,7 @@ public partial class MonitorSlidersPopup : Window
                 shackle.Bind(Shape.StrokeProperty, this.GetResourceObservable("AppLineStrong"));
                 body.Background = Brushes.Transparent;
                 body.Bind(Border.BorderBrushProperty, this.GetResourceObservable("AppLineStrong"));
-                body.BorderThickness = new Thickness(1.6);
+                body.BorderThickness = new Thickness(1.8);
             }
 
             ToolTip.SetTip(canvas, locked
@@ -171,10 +173,10 @@ public partial class MonitorSlidersPopup : Window
     // это просто ещё один контрол ВНУТРИ уже открытого окна, переключение фокуса
     // между контролами одного окна не трогает его активность вовсе.
     //
-    // Значок пера — маленький кружок в ЛЕВОМ ВЕРХНЕМ углу (не справа, как раньше
-    // делали для похожей кнопки в галерее иконок трея) — по явному указанию
-    // пользователя. Марки-строке освобождается место слева (см. pencilReserve),
-    // чтобы перо не перекрывало первую букву названия.
+    // FP17 Фаза 3 — значок пера БОЛЬШЕ НЕ перекрывает название (раньше был
+    // кружком внахлёст на левый край текста) — согласовано по макету:
+    // отдельная иконка слева от названия, в общей горизонтальной строке, без
+    // абсолютного позиционирования/margin-трюка.
     private static Control BuildEditableMonitorLabel(
         MonitorInfo monitor, Dictionary<string, string> monitorNames, MonitorNameStore monitorNameStore, double width)
     {
@@ -183,7 +185,8 @@ public partial class MonitorSlidersPopup : Window
         var container = new Panel();
         var isEditing = false;
         var isCommitting = false;
-        const double pencilReserve = 12;
+        const double pencilSize = 15;
+        const double pencilSpacing = 5;
 
         void Rebuild()
         {
@@ -192,7 +195,7 @@ public partial class MonitorSlidersPopup : Window
             if (isEditing)
             {
                 var currentCustom = monitorNames.TryGetValue(monitorKey, out var existing) ? existing : string.Empty;
-                var textBox = new TextBox { Text = currentCustom, Width = width, FontSize = 12, PlaceholderText = defaultName };
+                var textBox = new TextBox { Text = currentCustom, Width = width, FontSize = 15, PlaceholderText = defaultName };
 
                 // Иначе клик, которым пользователь заходит В поле, всплыл бы дальше и
                 // ничего плохого не сделал бы здесь — но это на будущее, если сверху
@@ -251,8 +254,7 @@ public partial class MonitorSlidersPopup : Window
                 ? custom
                 : defaultName;
 
-            var marquee = SettingsWindow.BuildMarqueeLabel(displayName, width - pencilReserve);
-            marquee.Margin = new Thickness(pencilReserve, 0, 0, 0);
+            var marquee = SettingsWindow.BuildMarqueeLabel(displayName, width - pencilSize - pencilSpacing, fontSize: 15);
             marquee.Cursor = new Cursor(StandardCursorType.Hand);
             ToolTip.SetTip(marquee, "Нажмите, чтобы переименовать");
 
@@ -266,17 +268,16 @@ public partial class MonitorSlidersPopup : Window
 
             var pencil = new Border
             {
-                Width = 13,
-                Height = 13,
-                CornerRadius = new CornerRadius(6.5),
+                Width = pencilSize,
+                Height = pencilSize,
+                CornerRadius = new CornerRadius(pencilSize / 2),
                 Background = new SolidColorBrush(Color.FromRgb(0x90, 0x90, 0x90)),
-                HorizontalAlignment = HorizontalAlignment.Left,
-                VerticalAlignment = VerticalAlignment.Top,
+                VerticalAlignment = VerticalAlignment.Center,
                 Cursor = new Cursor(StandardCursorType.Hand),
                 Child = new TextBlock
                 {
                     Text = "✎",
-                    FontSize = 8,
+                    FontSize = 9,
                     Foreground = Brushes.White,
                     HorizontalAlignment = HorizontalAlignment.Center,
                     VerticalAlignment = VerticalAlignment.Center,
@@ -285,8 +286,10 @@ public partial class MonitorSlidersPopup : Window
             ToolTip.SetTip(pencil, "Переименовать");
             pencil.PointerPressed += StartEditing;
 
-            container.Children.Add(marquee);
-            container.Children.Add(pencil);
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = pencilSpacing, VerticalAlignment = VerticalAlignment.Center };
+            row.Children.Add(pencil);
+            row.Children.Add(marquee);
+            container.Children.Add(row);
         }
 
         Rebuild();
